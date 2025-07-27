@@ -1,73 +1,44 @@
+# 최종 추천 environment.yml
 name: pyopengl
 channels:
-  - defaults
-  - https://repo.anaconda.com/pkgs/main
-  - https://repo.anaconda.com/pkgs/r
-  - https://repo.anaconda.com/pkgs/msys2
+  - pytorch   # PyTorch 공식 채널을 최우선으로
+  - defaults  # 기본 채널
+  - conda-forge # 추가적인 패키지를 위한 채널
 dependencies:
-  - bzip2=1.0.8
-  - ca-certificates=2025.2.25
-  - expat=2.7.1
-  - libffi=3.4.4
-  - openssl=3.0.16
-  - pip=25.1
-  - python=3.12.9
-  - setuptools=78.1.1
-  - sqlite=3.45.3
-  - tk=8.6.14
-  - wheel=0.45.1
-  - xz=5.6.4
-  - zlib=1.2.13
+  # 1. 핵심 과학 패키지 (Conda가 관리하도록 함)
+  - python=3.12   # 세부 버전은 Conda가 알아서 맞추도록 함
+  - pytorch
+  - torchvision
+  - numpy
+  - pandas
+  - scikit-learn
+  - scipy
+  - matplotlib
+  
+  # 2. 기타 유틸리티 (Conda로 설치)
+  - bzip2
+  - openssl
+  - pip
+  - sqlite
+  - tqdm
+  - yaml
+  - setuptools
+  - wheel
+  - xz
+  - zlib
+
+  # 3. Conda 채널에 없는 경우에만 Pip 사용
   - pip:
-      - accelerate==1.9.0
-      - certifi==2025.7.14
-      - charset-normalizer==3.4.2
-      - colorama==0.4.6
-      - contourpy==1.3.3
-      - cycler==0.12.1
-      - denoising-diffusion-pytorch==2.1.1
-      - einops==0.8.1
-      - ema-pytorch==0.7.7
-      - filelock==3.18.0
-      - fonttools==4.59.0
-      - fsspec==2025.7.0
-      - glfw==2.9.0
-      - huggingface-hub==0.33.4
-      - idna==3.10
-      - imgui==2.0.0
-      - jinja2==3.1.6
-      - joblib==1.5.1
-      - kiwisolver==1.4.8
-      - markupsafe==3.0.2
-      - matplotlib==3.10.3
-      - mpmath==1.3.0
-      - networkx==3.5
-      - numpy==2.2.5
-      - packaging==25.0
-      - pandas==2.3.1
-      - pillow==11.3.0
-      - psutil==7.0.0
-      - pygame==2.6.1
-      - pyglm==2.8.2
-      - pymo==0.0.1
-      - pymongo==3.13.0
-      - pyopengl==3.1.9
-      - pyopengl-accelerate==3.1.9
-      - pyparsing==3.2.3
-      - python-dateutil==2.9.0.post0
-      - pytorch-fid==0.3.0
-      - pytz==2025.2
-      - pyyaml==6.0.2
-      - requests==2.32.4
-      - safetensors==0.5.3
-      - scikit-learn==1.7.1
-      - scipy==1.16.0
-      - six==1.17.0
-      - sympy==1.14.0
-      - threadpoolctl==3.6.0
-      - torch==2.7.1
-      - torchvision==0.22.1
-      - tqdm==4.67.1
-      - typing-extensions==4.14.1
-      - tzdata==2025.2
-      - urllib3==2.5.0
+      - accelerate
+      - denoising-diffusion-pytorch
+      - einops
+      - ema-pytorch
+      - glfw
+      - huggingface-hub
+      - imgui
+      - pymo
+      - pyopengl
+      - pyopengl-accelerate
+      - pygame
+      - pytorch-fid
+      - safetensors

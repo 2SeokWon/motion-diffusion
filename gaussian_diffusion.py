@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from tqdm.auto import tqdm
 
 #1D 배열에서 특정 timesteps에 해당하는 값을 추출하여 텐서로 변환하고, 지정된 모양으로 확장하는 함수
-#1D 배열이 뭔데?
 def _extract_into_tensor(arr, timesteps, broadcast_shape):
     res = torch.from_numpy(arr).to(device=timesteps.device)[timesteps].float() #[timesteps,] #timesteps에 해당하는 값들만 추출 -> [batch_size,]
     while len(res.shape) < len(broadcast_shape):
@@ -42,11 +41,6 @@ class GaussianDiffusion(nn.Module):
         self.sqrt_recipm_alphas_cumprod = np.sqrt((1.0 / self.alphas_cumprod) - 1.0)
 
     def _predict_xstart_from_eps(self, x_t, t, eps): #q_sample 식을 통해 x_0 도출
-        """
-        x_t: 현재 timestep t에서의 노이즈가 추가된 이미지
-        t: 현재 timestep
-        eps: 모델이 예측한 노이즈
-        """
         return (
             _extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t -
             _extract_into_tensor(self.sqrt_recipm_alphas_cumprod, t, x_t.shape) * eps
@@ -103,6 +97,6 @@ class GaussianDiffusion(nn.Module):
         motion = torch.randn(*shape, device=device) #초기 노이즈
         for i in tqdm(reversed(range(0,self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
             t = torch.tensor([i] * shape[0], device=device) #현재 timestep
-            motion = self.p_sample(motion, t)['sample']
+            motion = self.p_sample(model, motion, t)['sample']
 
         return motion

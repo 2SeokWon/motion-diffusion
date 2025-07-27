@@ -4,20 +4,20 @@ import os
 import numpy as np
 import torch
 from tqdm import tqdm
+import json
 
 # utils.py에서 오일러 -> 6D 변환 함수를 가져옵니다.
 from utils import euler_to_sixd
 
 # --- 1. 설정 (Configuration) ---
 bvh_folder_path = "./dataset/"
-output_npy_path = "./processed_motion_data.npy"
-SEQ_LEN = 30
-STEP_SIZE = 10
+output_processed_dir = "./processed_data/"
+output_metadata_path = os.path.join(output_processed_dir, "metadata.json")
+os.makedirs(output_processed_dir, exist_ok=True)
+
+SEQ_LEN = 90
 
 def parse_bvh_motion_data(filepath):
-    """
-    pymo 없이 BVH 파일에서 MOTION 데이터만 수동으로 읽어오는 함수
-    """
     with open(filepath, 'r') as f:
         lines = f.readlines()
     
@@ -53,9 +53,9 @@ def parse_bvh_motion_data(filepath):
 all_motion_clips = []
 bvh_files = [f for f in os.listdir(bvh_folder_path) if f.endswith(".bvh")]
 
-print(f"Found {len(bvh_files)} BVH files. Starting preprocessing (without pymo)...")
+print(f"Found {len(bvh_files)} BVH files. Starting preprocessing...")
 
-for filename in tqdm(bvh_files, desc="Processing BVH files"):
+for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
     filepath = os.path.join(bvh_folder_path, filename)
     
     try:
@@ -65,8 +65,7 @@ for filename in tqdm(bvh_files, desc="Processing BVH files"):
             print(f"Skipping {filename}: No MOTION data found.")
             continue
             
-        num_frames, total_features = motion_data_euler.shape
-        
+        motion_data_euler = motion_data_euler[::2, :] #60fps -> 30fps로 다운샘플링
         # (2) 전역 위치(3)를 제외하고 회전값(오일러 각도)만 추출
         #     이 부분은 BVH 채널 순서에 따라 달라질 수 있으므로 주의해야 합니다.
         #     (가장 흔한 구조: 힙 위치 3, 힙 회전 3, 나머지 관절 회전 3...)
@@ -75,7 +74,8 @@ for filename in tqdm(bvh_files, desc="Processing BVH files"):
         # (3) 오일러 각도를 6D 회전 표현으로 변환
         # (a) Degree -> Radian 변환
         joint_rotations_rad = np.deg2rad(joint_rotations_deg)
-        
+        num_frames = joint_rotations_rad.shape[0]
+
         # (b) NumPy -> PyTorch Tensor 변환
         #      utils의 함수가 PyTorch 기반이므로 텐서로 바꿔줍니다.
         #      데이터를 [Frames, Joints, 3] 형태로 reshape합니다.
@@ -84,32 +84,44 @@ for filename in tqdm(bvh_files, desc="Processing BVH files"):
         rotations_tensor = rotations_tensor.reshape(num_frames, num_joints, 3)
         
         # (c) euler_to_sixd 함수 호출
-        sixd_rotations_tensor = euler_to_sixd(rotations_tensor, order='zyx')
+        sixd_rotations_tensor = euler_to_sixd(rotations_tensor, order='yxz')
         
         # (d) 다시 NumPy 배열로 변환하고 평탄화 (Flatten)
         #     [Frames, Joints, 6] -> [Frames, Joints * 6]
         sixd_rotations_np = sixd_rotations_tensor.numpy()
         sixd_rotations_flat = sixd_rotations_np.reshape(num_frames, -1)
         
-        # (4) 슬라이딩 윈도우를 사용해 고정 길이 클립으로 자르기
-        if num_frames >= SEQ_LEN:
-            for start_frame in range(0, num_frames - SEQ_LEN + 1, STEP_SIZE):
-                end_frame = start_frame + SEQ_LEN
-                clip = sixd_rotations_flat[start_frame:end_frame, :]
-                all_motion_clips.append(clip)
-                
+        clip_filename = f"clip_{idx:04d}.npy"
+        clip_filepath = os.path.join(output_processed_dir, clip_filename)
+        np.save(clip_filepath, sixd_rotations_flat)
+
+        all_motion_clips.append({
+            "path": clip_filename,
+            "length": num_frames
+        })
+
     except Exception as e:
         print(f"Could not process file {filename}. Error: {e}")
 
 # --- 3. 최종 데이터 취합 및 저장 ---
-if not all_motion_clips:
-    print("\nNo motion clips were generated. Please check your BVH files or settings.")
-else:
-    final_data = np.array(all_motion_clips, dtype=np.float32)
-    
-    print(f"\nPreprocessing complete.")
-    print(f"Total motion clips generated: {final_data.shape[0]}")
-    print(f"Data shape: {final_data.shape}")
-    
-    np.save(output_npy_path, final_data)
-    print(f"Data saved to {output_npy_path}")
+print("Calculating mean and std for the entire dataset...")
+all_clips_for_stats = []
+for metadata in tqdm(all_motion_clips, desc="Loading clips for stats"):
+    clip_data = np.load(os.path.join(output_processed_dir, metadata['path']))
+    all_clips_for_stats.append(clip_data)
+
+full_dataset_np = np.concatenate(all_clips_for_stats, axis=0)
+mean = np.mean(full_dataset_np, axis=0, keepdims=True)
+std = np.std(full_dataset_np, axis=0, keepdims=True)
+std[std == 0] = 1e-7
+
+# 통계 정보 파일 저장
+np.save(os.path.join(output_processed_dir, "mean.npy"), mean)
+np.save(os.path.join(output_processed_dir, "std.npy"), std)
+
+# 최종 메타데이터 파일 저장
+with open(output_metadata_path, 'w') as f:
+    json.dump(all_motion_clips, f, indent=4)
+
+print("\nPreprocessing complete.")
+print(f"Processed clips and metadata saved to '{output_processed_dir}'")
