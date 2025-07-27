@@ -15,7 +15,7 @@ from gaussian_diffusion import GaussianDiffusion
 from utils import sixd_to_euler_angles
 
 learning_rate = 1e-4
-num_epochs = 50
+num_epochs = 1
 batch_size = 32
 save_interval = 10
 
@@ -41,7 +41,7 @@ os.makedirs(save_dir, exist_ok=True)
 os.makedirs(output_bvh_dir, exist_ok=True)
 
 skeleton_template_path = "./dataset/Aeroplane_BR.bvh"  # 스켈레톤 템플릿 파일 경로
-num_samples_to_generate = 10  # 생성할 샘플 수
+num_samples_to_generate = 1  # 생성할 샘플 수
 
 class MotionDataset(Dataset):
     def __init__(self, processed_data_path, seq_len=90):

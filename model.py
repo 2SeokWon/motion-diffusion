@@ -65,15 +65,11 @@ class OutputProcess(nn.Module):
         return x
 
 class MotionTransformer(nn.Module):
-    def __init__(self, njoints, nfeats, seq_len = None,
+    def __init__(self, input_feats, seq_len = None,
                 latent_dim=256, ff_size = 1024, num_layers=8,
                 num_heads = 4, dropout=0.1,**kargs):
         super().__init__()
 
-        self.njoints = njoints #Number of joints in the skeleton : 23
-        self.nfeats = nfeats #Number of features per joint : 6
-
-        input_feats = njoints * nfeats + 4 #Input feature size (e.g., 23 joints * 6 features = 138) + 4
 
         self.latent_dim = latent_dim #Embedding dimension
         self.ff_size = ff_size #Feedforward size
