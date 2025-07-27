@@ -70,10 +70,10 @@ class MotionTransformer(nn.Module):
                 num_heads = 4, dropout=0.1,**kargs):
         super().__init__()
 
-        self.njoints = njoints #Number of joints in the skeleton : 22
+        self.njoints = njoints #Number of joints in the skeleton : 23
         self.nfeats = nfeats #Number of features per joint : 6
-        
-        input_feats = njoints * nfeats #Input feature size (e.g., 22 joints * 6 features = 132)
+
+        input_feats = njoints * nfeats + 4 #Input feature size (e.g., 23 joints * 6 features = 138) + 4
 
         self.latent_dim = latent_dim #Embedding dimension
         self.ff_size = ff_size #Feedforward size

@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 import json
+from scipy.spatial.transform import Rotation
 
 # utils.py에서 오일러 -> 6D 변환 함수를 가져옵니다.
 from utils import euler_to_sixd
@@ -15,6 +16,7 @@ output_processed_dir = "./processed_data/"
 output_metadata_path = os.path.join(output_processed_dir, "metadata.json")
 os.makedirs(output_processed_dir, exist_ok=True)
 
+ROTATION_ORDER = 'yxz'  # 오일러 각도 변환 순서
 SEQ_LEN = 90
 
 def parse_bvh_motion_data(filepath):
@@ -66,38 +68,69 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
             continue
             
         motion_data_euler = motion_data_euler[::2, :] #60fps -> 30fps로 다운샘플링
-        # (2) 전역 위치(3)를 제외하고 회전값(오일러 각도)만 추출
-        #     이 부분은 BVH 채널 순서에 따라 달라질 수 있으므로 주의해야 합니다.
-        #     (가장 흔한 구조: 힙 위치 3, 힙 회전 3, 나머지 관절 회전 3...)
-        joint_rotations_deg = motion_data_euler[:, 3:]
-        
-        # (3) 오일러 각도를 6D 회전 표현으로 변환
-        # (a) Degree -> Radian 변환
-        joint_rotations_rad = np.deg2rad(joint_rotations_deg)
-        num_frames = joint_rotations_rad.shape[0]
+        #결국 offset 값은 못 담나?
 
-        # (b) NumPy -> PyTorch Tensor 변환
-        #      utils의 함수가 PyTorch 기반이므로 텐서로 바꿔줍니다.
-        #      데이터를 [Frames, Joints, 3] 형태로 reshape합니다.
-        num_joints = joint_rotations_rad.shape[1] // 3
-        rotations_tensor = torch.from_numpy(joint_rotations_rad).float()
+        root_positions = motion_data_euler[:, 0:3]
+        root_rotations_deg = motion_data_euler[:, 3:6]
+        joint_rotations_deg = motion_data_euler[:, 6:]
+        
+        num_frames = motion_data_euler.shape[0]
+
+        # (3) 오일러 각도를 Quaternion으로 변환
+        root_rotations_quat = Rotation.from_euler(ROTATION_ORDER, root_rotations_deg, degrees=True).as_quat()
+        
+        #이전 프레임 대비 루트 위치 및 회전 변화량 계산
+        root_velocity = root_positions[1:] - root_positions[:-1]
+
+        # 루트 회전 변화량 계산
+        root_rot_quat_diff = (
+            Rotation.from_quat(root_rotations_quat[1:]) *
+            Rotation.from_quat(root_rotations_quat[:-1]).inv()
+        ).as_quat()
+
+        #변화량을 루트의 로컬 좌표계 기준으로 변환
+        inv_root_rotations = Rotation.from_quat(root_rotations_quat[:-1]).inv()
+        root_velocity_local = inv_root_rotations.apply(root_velocity)
+        
+        #Y축 회전 속도만 추출
+        root_angular_velocity_y = Rotation.from_quat(root_rot_quat_diff).as_euler('yxz', degrees=True)[:, 0]
+
+        #오일러 각을 6d로 변환
+        all_rotations_deg = np.concatenate([root_rotations_deg, joint_rotations_deg], axis=1)
+        all_rotations_rad = np.deg2rad(all_rotations_deg)
+        num_joints = all_rotations_rad.shape[1] // 3
+        rotations_tensor = torch.from_numpy(all_rotations_rad).float()
         rotations_tensor = rotations_tensor.reshape(num_frames, num_joints, 3)
         
         # (c) euler_to_sixd 함수 호출
-        sixd_rotations_tensor = euler_to_sixd(rotations_tensor, order='yxz')
+        sixd_rotations_tensor = euler_to_sixd(rotations_tensor, order=ROTATION_ORDER)
         
         # (d) 다시 NumPy 배열로 변환하고 평탄화 (Flatten)
-        #     [Frames, Joints, 6] -> [Frames, Joints * 6]
         sixd_rotations_np = sixd_rotations_tensor.numpy()
         sixd_rotations_flat = sixd_rotations_np.reshape(num_frames, -1)
         
+        # 첫 프레임은 속도를 계산할 수 없으므로, 두 번째 프레임부터 시작합니다.
+        # 따라서 모든 데이터의 길이는 (num_frames - 1)이 됩니다.
+        root_y_height = root_positions[1:, [1]]  # shape (N-1, 1)
+        root_xz_velocity = root_velocity_local[:, [0, 2]] # shape (N-1, 2)
+        root_y_angular_velocity = root_angular_velocity_y[:, np.newaxis] # shape (N-1, 1)
+
+        all_joint_6d_rotations = sixd_rotations_flat[1:, :]  # shape (N-1, Joints * 6)
+        
+        final_features = np.concatenate([
+            root_y_height,
+            root_xz_velocity,
+            root_y_angular_velocity,
+            all_joint_6d_rotations
+        ], axis=1)
+
         clip_filename = f"clip_{idx:04d}.npy"
         clip_filepath = os.path.join(output_processed_dir, clip_filename)
-        np.save(clip_filepath, sixd_rotations_flat)
+        np.save(clip_filepath, final_features)
 
         all_motion_clips.append({
             "path": clip_filename,
-            "length": num_frames
+            "length": final_features.shape[0]
         })
 
     except Exception as e:

@@ -6,6 +6,7 @@ import pandas as pd
 import os
 import json
 import random
+from scipy.spatial.transform import Rotation
 
 from tqdm import tqdm
 
@@ -20,7 +21,12 @@ save_interval = 10
 
 data_path = ''
 njoints = 23
-nfeats = 6
+rotation_features = 6
+root_motion_features = 4 # 루트 Y높이(1) + 수평속도(2) + Y회전속도(1)
+
+joint_rotation_features = njoints * rotation_features
+input_feats = root_motion_features + joint_rotation_features
+
 seq_len = 90
 
 num_timesteps = 1000
@@ -35,7 +41,7 @@ os.makedirs(save_dir, exist_ok=True)
 os.makedirs(output_bvh_dir, exist_ok=True)
 
 skeleton_template_path = "./dataset/Aeroplane_BR.bvh"  # 스켈레톤 템플릿 파일 경로
-num_samples_to_generate = 5  # 생성할 샘플 수
+num_samples_to_generate = 10  # 생성할 샘플 수
 
 class MotionDataset(Dataset):
     def __init__(self, processed_data_path, seq_len=90):
@@ -102,16 +108,16 @@ class MotionDataset(Dataset):
         normalized_segment = (motion_segment - self.mean_np) / self.std_np
         return torch.from_numpy(normalized_segment).float()
 
-def generate_and_save_bvh(model, diffusion, dataset, num_samples, seq_len, njoints, nfeats, template_path, output_dir, device):
+def generate_and_save_bvh(model, diffusion, dataset, num_samples, seq_len, input_feats, root_motion_features, template_path, output_dir, device):
     print("Starting sampling...")
     model.eval()
 
     with torch.no_grad():
-        sample_shape = (num_samples, seq_len, njoints * nfeats)
+        sample_shape = (num_samples, seq_len, input_feats)
         generated_motion = diffusion.p_sample_loop(model, sample_shape)
 
-        mean = dataset.mean.to(device)
-        std = dataset.std.to(device)
+        mean = torch.from_numpy(dataset.mean).to(device) # dataset.mean은 이제 numpy
+        std = torch.from_numpy(dataset.std).to(device)   # dataset.std도 numpy
         unnormalized_motion = generated_motion * std + mean
     
     print("Converting generated motions to BVH files...")
@@ -137,15 +143,56 @@ def generate_and_save_bvh(model, diffusion, dataset, num_samples, seq_len, njoin
         
         single_motion = unnormalized_motion[i]
         
-        # 6D -> Euler 변환 (utils.py의 함수 사용)
-        sixd_per_joint = single_motion.reshape(seq_len, njoints, nfeats)
-        euler_angles_rad = sixd_to_euler_angles(sixd_per_joint, order='yxz')
-        euler_angles_deg = torch.rad2deg(euler_angles_rad)
+        root_data = single_motion[:, :root_motion_features]
+        joint_data_6d = single_motion[:, root_motion_features:]
+
+        root_y_height = root_data[:, 0]
+        root_xz_velocity = root_data[:, 1:3]
+        root_y_angular_velocity_deg = torch.rad2deg(root_data[:, 3])
+
+        current_pos = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32, device=device)
+        current_y_rot_deg = 0.0
+
+        final_root_positions = []
+        final_root_rotations_deg = []
+
+        for frame_idx in range(seq_len):
+            current_y_rot_deg += root_y_angular_velocity_deg[frame_idx]
+            current_y_rot_rad = torch.deg2rad(current_y_rot_deg)
+            
+            cos_y = torch.cos(current_y_rot_rad)
+            sin_y = torch.sin(current_y_rot_rad)
+
+            world_dx = root_xz_velocity[frame_idx, 0] * cos_y - root_xz_velocity[frame_idx, 1] * sin_y
+            world_dz = root_xz_velocity[frame_idx, 0] * sin_y + root_xz_velocity[frame_idx, 1] * cos_y
+
+            current_pos[0] += world_dx
+            current_pos[1] = root_y_height[frame_idx]  # Y 높이는 그대로
+            current_pos[2] += world_dz
+            
+            final_root_positions.append(current_pos.clone())
+            final_root_rotations_deg.append(torch.tensor([current_y_rot_deg, 0.0, 0.0], device=device))
+
+         # 리스트를 텐서로 변환
+        root_positions_tensor = torch.stack(final_root_positions)
+        root_rotations_tensor = torch.stack(final_root_rotations_deg)
+
+        # 나머지 관절 회전 변환 (6D -> Euler)
+        njoints = (input_feats - root_motion_features) // 6
+        joint_data_6d_reshaped = joint_data_6d.reshape(seq_len, njoints, 6)
         
-        # 전역 위치(0)와 회전값(오일러) 결합
-        positions = torch.zeros(seq_len, 3, device=device)
-        rotations_flat = euler_angles_deg.reshape(seq_len, -1)
-        motion_data_flat = torch.cat([positions, rotations_flat], dim=1)
+        # Hips를 제외한 나머지 관절들
+        other_joints_6d = joint_data_6d_reshaped[:, 1:, :] 
+        other_joints_euler_rad = sixd_to_euler_angles(other_joints_6d, order='yxz')
+        other_joints_euler_deg = torch.rad2deg(other_joints_euler_rad)
+        
+        # 최종 BVH 데이터 조립
+        rotations_flat = torch.cat([
+            root_rotations_tensor, # 루트 회전
+            other_joints_euler_deg.reshape(seq_len, -1) # 나머지 관절 회전
+        ], dim=1)
+        
+        motion_data_flat = torch.cat([root_positions_tensor, rotations_flat], dim=1)
         
         # MOTION 데이터 블록 생성
         motion_lines = [" ".join(f"{x:.6f}" for x in frame) for frame in motion_data_flat.cpu().numpy()]
@@ -170,7 +217,7 @@ print("Dataset loaded successfully.")
 print("Initializing model...")
 model = MotionTransformer(
     njoints=njoints,
-    nfeats=nfeats,
+    input_feats=input_feats,
     seq_len=seq_len,
     latent_dim=256,
     ff_size=1024,
@@ -217,6 +264,6 @@ for epoch in range(num_epochs):
         torch.save(model.state_dict(), save_path)
         print(f"Model saved to {save_path}")
 
-        generate_and_save_bvh(model, diffusion, dataset, num_samples_to_generate, seq_len, njoints, nfeats, skeleton_template_path, output_bvh_dir, device)
+        generate_and_save_bvh(model, diffusion, dataset, num_samples_to_generate, seq_len, njoints, input_feats, root_motion_features, skeleton_template_path, output_bvh_dir, device)
 
 print("Training and Generating completed.")
