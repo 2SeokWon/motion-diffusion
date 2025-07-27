@@ -5,21 +5,19 @@ channels:
   - https://repo.anaconda.com/pkgs/r
   - https://repo.anaconda.com/pkgs/msys2
 dependencies:
-  - bzip2=1.0.8=h2bbff1b_6
-  - ca-certificates=2025.2.25=haa95532_0
-  - expat=2.7.1=h8ddb27b_0
-  - libffi=3.4.4=hd77b12b_1
-  - openssl=3.0.16=h3f729d1_0
-  - pip=25.1=pyhc872135_2
-  - python=3.12.9=h14ffc60_0
-  - setuptools=78.1.1=py312haa95532_0
-  - sqlite=3.45.3=h2bbff1b_0
-  - tk=8.6.14=h0416ee5_0
-  - vc=14.42=haa95532_5
-  - vs2015_runtime=14.42.34433=hbfb602d_5
-  - wheel=0.45.1=py312haa95532_0
-  - xz=5.6.4=h4754444_1
-  - zlib=1.2.13=h8cc25b3_1
+  - bzip2=1.0.8
+  - ca-certificates=2025.2.25
+  - expat=2.7.1
+  - libffi=3.4.4
+  - openssl=3.0.16
+  - pip=25.1
+  - python=3.12.9
+  - setuptools=78.1.1
+  - sqlite=3.45.3
+  - tk=8.6.14
+  - wheel=0.45.1
+  - xz=5.6.4
+  - zlib=1.2.13
   - pip:
       - accelerate==1.9.0
       - certifi==2025.7.14
@@ -73,4 +71,3 @@ dependencies:
       - typing-extensions==4.14.1
       - tzdata==2025.2
       - urllib3==2.5.0
-prefix: C:\Users\seokb\anaconda3\envs\pyopengl
