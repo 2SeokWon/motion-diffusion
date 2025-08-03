@@ -1,5 +1,3 @@
-# 파일 이름: preprocess_bvh_no_pymo.py
-
 import os
 import numpy as np
 import torch
@@ -13,11 +11,90 @@ from utils import euler_to_sixd
 # --- 1. 설정 (Configuration) ---
 bvh_folder_path = "./dataset/"
 output_processed_dir = "./processed_data/"
+template_bvh_path = "./dataset/Aeroplane_BR.bvh"
+
 output_metadata_path = os.path.join(output_processed_dir, "metadata.json")
 os.makedirs(output_processed_dir, exist_ok=True)
 
 ROTATION_ORDER = 'yxz'  # 오일러 각도 변환 순서
 SEQ_LEN = 90
+
+def parse_bvh_hierarchy(filepath):
+    """
+    BVH 파일의 HIERARCHY 섹션을 파싱하여 CHANNELS 정보가 있는
+    실제 관절의 이름, 오프셋, 부모 인덱스만을 추출합니다.
+    """
+    with open(filepath, 'r') as f:
+        lines = f.readlines()
+        
+    parents = []
+    offsets = []
+    joint_names = []
+    
+    joint_stack = []
+    
+    # 임시로 현재 관절 정보를 저장할 변수
+    current_joint_info = {}
+
+    for line in lines:
+        parts = line.strip().split()
+        if not parts: continue
+            
+        keyword = parts[0].upper()
+        
+        if keyword in ["ROOT", "JOINT"]:
+            # 이전 관절 정보가 CHANNELS를 포함했다면 최종 리스트에 추가
+            if 'name' in current_joint_info and 'channels' in current_joint_info:
+                joint_names.append(current_joint_info['name'])
+                offsets.append(current_joint_info['offset'])
+                if not joint_stack:
+                    parents.append(-1)
+                else:
+                    parents.append(joint_stack[-1])
+                joint_stack.append(len(joint_names) - 1)
+
+            # 새로운 관절 정보 초기화
+            current_joint_info = {'name': parts[1]}
+            
+        elif keyword == "OFFSET":
+            if 'name' in current_joint_info:
+                current_joint_info['offset'] = [float(v) for v in parts[1:]]
+            
+        elif keyword == "CHANNELS":
+            if 'name' in current_joint_info:
+                current_joint_info['channels'] = parts[2:]
+
+        elif keyword == "}":
+            # 블록이 끝날 때, 마지막으로 처리되던 관절 정보 확인
+            if 'name' in current_joint_info and 'channels' in current_joint_info:
+                joint_names.append(current_joint_info['name'])
+                offsets.append(current_joint_info['offset'])
+                if not joint_stack:
+                    parents.append(-1)
+                else:
+                    parents.append(joint_stack[-1])
+                joint_stack.append(len(joint_names) - 1)
+            
+            # 현재 관절 처리가 끝났으므로 초기화
+            current_joint_info = {}
+            
+            if joint_stack:
+                joint_stack.pop()
+        
+        elif keyword == "MOTION":
+            break
+
+    # 파일 끝까지 읽었을 때 마지막 관절 처리
+    # (파일 끝에 '}'가 여러 개 연속으로 나오는 경우 대비)
+    if 'name' in current_joint_info and 'channels' in current_joint_info:
+        joint_names.append(current_joint_info['name'])
+        offsets.append(current_joint_info['offset'])
+        if not joint_stack:
+            parents.append(-1)
+        else:
+            parents.append(joint_stack[-1])
+
+    return np.array(offsets), np.array(parents), joint_names
 
 def parse_bvh_motion_data(filepath):
     with open(filepath, 'r') as f:
@@ -47,11 +124,29 @@ def parse_bvh_motion_data(filepath):
         # 공백으로 분리된 숫자들을 float으로 변환
         values = [float(v) for v in lines[i].strip().split()]
         motion_data.append(values)
-        
-    return np.array(motion_data)
+
+    return np.array(motion_data) #[num_frames, 3(pos) + 23 * 3(rotations)] 
 
 
 # --- 2. 전처리 시작 ---
+
+print("--- Step 1: Parsing Skeleton Structure ---")
+try:
+    offsets, parents, joint_names = parse_bvh_hierarchy(template_bvh_path)
+    
+    # 파싱된 뼈대 정보를 파일로 저장
+    np.save(os.path.join(output_processed_dir, "offsets.npy"), offsets)
+    np.save(os.path.join(output_processed_dir, "parents.npy"), parents)
+    
+    print(f"Skeleton parsed successfully: {len(parents)} joints found.")
+    print("Saved 'offsets.npy' and 'parents.npy' to processed_data folder.")
+    
+except Exception as e:
+    print(f"FATAL: Could not parse skeleton from '{template_bvh_path}'. Error: {e}")
+    exit()
+
+
+print("\n--- Step 2: Extracting Features from BVH Files ---")
 all_motion_clips = []
 bvh_files = [f for f in os.listdir(bvh_folder_path) if f.endswith(".bvh")]
 
@@ -62,48 +157,47 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
     
     try:
         # (1) BVH 파일에서 모션 데이터(오일러 각도 + 위치) 파싱
-        motion_data_euler = parse_bvh_motion_data(filepath)
+        motion_data_euler = parse_bvh_motion_data(filepath) #[num_frames, 3(pos) + 23 * 3(rotations)]
         if motion_data_euler is None:
             print(f"Skipping {filename}: No MOTION data found.")
             continue
             
-        motion_data_euler = motion_data_euler[::2, :] #60fps -> 30fps로 다운샘플링
-        #결국 offset 값은 못 담나?
+        motion_data_euler = motion_data_euler[::2, :] #60fps -> 30fps로 다운샘플링 #[num_frames // 2, 3(pos) + 23 * 3(rotations)]
 
-        root_positions = motion_data_euler[:, 0:3]
-        root_rotations_deg = motion_data_euler[:, 3:6]
-        joint_rotations_deg = motion_data_euler[:, 6:]
+        root_positions = motion_data_euler[:, 0:3] # [num_frames, 3]
+        root_rotations_deg = motion_data_euler[:, 3:6] # [num_frames, 3]
+        joint_rotations_deg = motion_data_euler[:, 6:] # [num_frames, 22 * 3]
         
         num_frames = motion_data_euler.shape[0]
 
-        # (3) 오일러 각도를 Quaternion으로 변환
+        # (3) 오일러 각도를 Quaternion으로 변환, 회전 계산을 위해서 [num_frames, 4]
         root_rotations_quat = Rotation.from_euler(ROTATION_ORDER, root_rotations_deg, degrees=True).as_quat()
         
-        #이전 프레임 대비 루트 위치 및 회전 변화량 계산
+        #이전 프레임 대비 루트 위치 및 회전 변화량 계산 [num_frames - 1, 3] 근데 월드좌표계 기준임
         root_velocity = root_positions[1:] - root_positions[:-1]
 
-        # 루트 회전 변화량 계산
+        # 루트 회전 변화량 계산 t-1에서 t로 넘어갈 때 캐릭터의 방향이 얼마나 변했나?
         root_rot_quat_diff = (
-            Rotation.from_quat(root_rotations_quat[1:]) *
-            Rotation.from_quat(root_rotations_quat[:-1]).inv()
-        ).as_quat()
+            Rotation.from_quat(root_rotations_quat[1:]) * #현재 프레임의 회전
+            Rotation.from_quat(root_rotations_quat[:-1]).inv() #이전 프레임의 역회전
+        ).as_quat() #근데 중요한가?
 
         #변화량을 루트의 로컬 좌표계 기준으로 변환
-        inv_root_rotations = Rotation.from_quat(root_rotations_quat[:-1]).inv()
+        inv_root_rotations = Rotation.from_quat(root_rotations_quat[:-1]).inv() #이전 프레임의 역회전
         root_velocity_local = inv_root_rotations.apply(root_velocity)
         
         #Y축 회전 속도만 추출
         root_angular_velocity_y = Rotation.from_quat(root_rot_quat_diff).as_euler('yxz', degrees=True)[:, 0]
 
-        #오일러 각을 6d로 변환
-        all_rotations_deg = np.concatenate([root_rotations_deg, joint_rotations_deg], axis=1)
-        all_rotations_rad = np.deg2rad(all_rotations_deg)
+        #오일러 각을 6d로 변환, 짐벌락 없애야 하니까
+        all_rotations_deg = np.concatenate([root_rotations_deg, joint_rotations_deg], axis=1) #root position만 제외
+        all_rotations_rad = np.deg2rad(all_rotations_deg) #degree to radian [100, 69]
         num_joints = all_rotations_rad.shape[1] // 3
-        rotations_tensor = torch.from_numpy(all_rotations_rad).float()
+        rotations_tensor = torch.from_numpy(all_rotations_rad).float() #pytorch tensor로 변환
         rotations_tensor = rotations_tensor.reshape(num_frames, num_joints, 3)
         
         # (c) euler_to_sixd 함수 호출
-        sixd_rotations_tensor = euler_to_sixd(rotations_tensor, order=ROTATION_ORDER)
+        sixd_rotations_tensor = euler_to_sixd(rotations_tensor, order=ROTATION_ORDER) #오일러 각도를 6D로
         
         # (d) 다시 NumPy 배열로 변환하고 평탄화 (Flatten)
         sixd_rotations_np = sixd_rotations_tensor.numpy()
@@ -117,7 +211,7 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
 
         all_joint_6d_rotations = sixd_rotations_flat[1:, :]  # shape (N-1, Joints * 6)
         
-        final_features = np.concatenate([
+        final_features = np.concatenate([ #결국 학습에선 이걸 사용
             root_y_height,
             root_xz_velocity,
             root_y_angular_velocity,

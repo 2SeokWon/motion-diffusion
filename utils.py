@@ -1,8 +1,10 @@
-# 파일 이름: utils.py
-
 import torch
 import torch.nn.functional as F
 import numpy as np
+import torch
+import numpy as np
+import os
+from scipy.spatial.transform import Rotation
 
 def euler_to_sixd(euler_angles_rad, order='yxz'):
     """
@@ -127,3 +129,89 @@ def sixd_to_rotation_matrix(sixd_vectors):
     
     # 세 개의 기저 벡터를 쌓아 회전 행렬 구성
     return torch.stack([b1, b2, b3], dim=-2)
+
+
+def generate_and_save_bvh(model, diffusion, dataset, num_samples, seq_len, input_feats, root_motion_features, template_path, output_dir, device):
+    print("Starting sampling...")
+    model.eval()
+
+    with torch.no_grad():
+        sample_shape = (num_samples, seq_len, input_feats)
+        generated_motion_norm = diffusion.p_sample_loop(model, sample_shape)
+
+        mean = dataset.mean.to(device)  # dataset.mean도 numpy
+        std = dataset.std.to(device)   # dataset.std도 numpy
+        generated_motion = generated_motion_norm * std + mean
+    
+    print("Converting generated motions to BVH files...")
+    # --- 스켈레톤 템플릿 읽기 ---
+    try:
+        with open(template_path, 'r') as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        print(f"Error: Skeleton template file not found at '{template_path}'")
+        return
+    
+    header_lines = []
+    motion_header_found = False
+    for line in lines:
+        if "MOTION" in line.upper(): motion_header_found = True
+        if motion_header_found and "Frame Time:" in line:
+            header_lines.append(line); break
+        else: header_lines.append(line)
+        
+    # --- 각 샘플을 BVH로 변환 ---
+    for i in range(num_samples):
+        print(f"Processing sample {i+1}/{num_samples}...")
+
+        single_motion = generated_motion[i].cpu()
+
+        root_y_height = single_motion[:,0]
+        root_xz_velocity_local = single_motion[:, 1:3]
+        root_y_angular_velocity_deg = single_motion[:, 3]
+        all_joint_6d_rotations_flat = single_motion[:,4:]
+
+        num_all_joints = all_joint_6d_rotations_flat.shape[1] // 6
+        all_joint_6d_reshaped = all_joint_6d_rotations_flat.reshape(seq_len, num_all_joints, 6)
+
+        all_joints_euler_rad = sixd_to_euler_angles(torch.from_numpy(all_joint_6d_reshaped.numpy()), order='yxz')
+        all_joints_euler_deg = torch.rad2deg(all_joints_euler_rad)
+
+        root_rotations_deg = all_joints_euler_deg[:, 0, :]  # 루트 관절 회전 (첫 번째 관절)
+        other_joints_rotations_deg = all_joints_euler_deg[:, 1:, :]  # 나머지 관절 회전
+
+        final_root_positions = torch.zeros(seq_len, 3)
+        final_root_rotations_deg = root_rotations_deg
+        final_root_positions[0,1] = root_y_height[0]
+
+
+        for frame_idx in range(seq_len - 1):
+            current_rot = Rotation.from_euler('yxz', final_root_rotations_deg[frame_idx].numpy(), degrees=True)
+
+            local_vel = np.array([root_xz_velocity_local[frame_idx,0], 0, root_xz_velocity_local[frame_idx,1]])
+            world_vel_increment = current_rot.apply(local_vel)
+
+            final_root_positions[frame_idx + 1] = final_root_positions[frame_idx] + torch.from_numpy(world_vel_increment)
+
+            final_root_positions[frame_idx + 1, 1] = root_y_height[frame_idx + 1]  # Y 높이는 그대로 유지
+        
+        # 최종 BVH 데이터 조립
+        rotations_flat = torch.cat([
+            final_root_rotations_deg, # 루트 회전
+            other_joints_rotations_deg.reshape(seq_len, -1) # 나머지 관절 회전
+        ], dim=1)
+        
+        motion_data_flat = torch.cat([final_root_positions, rotations_flat], dim=1)
+        
+        # MOTION 데이터 블록 생성
+        motion_lines = [" ".join(f"{x:.6f}" for x in frame) for frame in motion_data_flat.cpu().numpy()]
+        
+        # 최종 파일 저장
+        output_path = os.path.join(output_dir, f"generated_motion_{i+1}.bvh")
+        with open(output_path, 'w') as f:
+            for line in header_lines:
+                if "Frames:" in line: f.write(f"Frames: {seq_len}\n")
+                else: f.write(line)
+            f.write("\n".join(motion_lines))
+            
+    print(f"\nAll motions saved to '{output_dir}' directory.")

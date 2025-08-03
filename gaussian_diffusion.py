@@ -3,12 +3,13 @@ import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
 from tqdm.auto import tqdm
+from kinematics import features_to_xyz
 
 #1D 배열에서 특정 timesteps에 해당하는 값을 추출하여 텐서로 변환하고, 지정된 모양으로 확장하는 함수
 def _extract_into_tensor(arr, timesteps, broadcast_shape):
-    res = torch.from_numpy(arr).to(device=timesteps.device)[timesteps].float() #[timesteps,] #timesteps에 해당하는 값들만 추출 -> [batch_size,]
+    res = arr.to(device=timesteps.device)[timesteps].float() #[timesteps,] #timesteps에 해당하는 값들만 추출 -> (batch_size,)
     while len(res.shape) < len(broadcast_shape):
-        res = res[...,None] #res의 차원을 늘려서 broadcast_shape에 맞게 확장
+        res = res[...,None] #res의 차원을 늘려서 broadcast_shape에 맞게 확장 -> (batch_size, 1, 1)이 보통 경우
     
     return res.expand(broadcast_shape)
 
@@ -17,12 +18,12 @@ class GaussianDiffusion(nn.Module):
         super().__init__()
 
         #beta to alpha 설정
-        self.betas = betas #β_t
-        self.num_timesteps = int(self.betas.shape[0]) #beta가 단순 linear한 숫자가 아닌 shape가 있나?
+        self.betas = betas #β_t (1000, ) 구조로 [0.0001 , ... , 0.02]
+        self.num_timesteps = int(self.betas.shape[0])
 
-        alphas = 1.0 - self.betas #α_t = 1 - β_t
-        self.alphas_cumprod = np.cumprod(alphas, axis=0) #α_t 누적곱, α_tilde
-        self.alphas_cumprod_prev = np.append(1.0, self.alphas_cumprod[:-1]) #α_t-1 누적곱, α_tilde_prev
+        alphas = 1.0 - self.betas #α_t = 1 - β_t 로 (1000 ,)
+        self.alphas_cumprod = np.cumprod(alphas, axis=0) #α_t 누적곱, α_tilde (1000, )
+        self.alphas_cumprod_prev = np.append(1.0, self.alphas_cumprod[:-1]) #α_t-1 누적곱, α_tilde_prev (1000, ) #α_tilde_prev = [1.0, α_0, α_1, ..., α_998]
 
         #q_sample을 위한 alpha 계산
         self.sqrt_alphas_cumprod = np.sqrt(self.alphas_cumprod) #Training의 loss 함수에서 사용할  root(α_tilde), 해당 단계까지 가기 위한 노이즈 총량?
@@ -40,7 +41,7 @@ class GaussianDiffusion(nn.Module):
         self.sqrt_recip_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod)
         self.sqrt_recipm_alphas_cumprod = np.sqrt((1.0 / self.alphas_cumprod) - 1.0)
 
-    def _predict_xstart_from_eps(self, x_t, t, eps): #q_sample 식을 통해 x_0 도출
+    def _predict_xstart_from_eps(self, x_t, t, eps): #q_sample 식을 통해 x_0 도출, x_t, eps: (batch_size, seq_len, input_feats)
         return (
             _extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t -
             _extract_into_tensor(self.sqrt_recipm_alphas_cumprod, t, x_t.shape) * eps
@@ -55,7 +56,7 @@ class GaussianDiffusion(nn.Module):
             _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
     
-    def training_losses(self, model, x_start, t, noise = None):
+    def training_losses(self, model, x_start, t, skeleton, mean, std, noise=None):
         if noise is None:
             noise = torch.randn_like(x_start)
         
@@ -65,10 +66,26 @@ class GaussianDiffusion(nn.Module):
 
         target = noise
         
-        loss = F.mse_loss(model_output, target)
+        loss_simple = F.mse_loss(model_output, target)
+        
+        lambda_fk = 1.0
+        loss_fk = torch.tensor(0.0, device=x_start.device)
 
-        return {'loss' : loss, 'model_output': model_output, 'target': target, 'x_t': x_t}
-    
+        if lambda_fk > 0.0:
+            pred_xstart = self._predict_xstart_from_eps(x_t, t, model_output)
+            target_xyz = features_to_xyz(x_start, skeleton, mean, std)
+            pred_xyz = features_to_xyz(pred_xstart, skeleton, mean, std)
+
+            loss_fk = F.mse_loss(pred_xyz, target_xyz)
+        
+        final_loss = loss_simple + lambda_fk * loss_fk
+
+        return {
+            'loss': final_loss, 
+            'loss_simple': loss_simple.item(),
+            'loss_fk': loss_fk.item()
+        }
+
     def p_mean_variance(self, model, x_t, t): #모델을 통해 노이즈 예측하고 예측값으로부터 x_0을 구하고, x_{t-1}의 평균과 분산을 계산
         model_output = model(x_t, t)
         pred_xstart = self._predict_xstart_from_eps(x_t, t, model_output)

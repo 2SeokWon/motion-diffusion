@@ -11,7 +11,7 @@ class PositionalEncoding(nn.Module):
         pe = torch.zeros(max_len, d_model) #[5000, 512] 각 위치를 512 dim 벡터로 표현
         position = torch.arange(0, max_len).unsqueeze(1) #[0,1,2,...,4999]인 1차원 텐서에 unsqueeze를 통해 -> [5000, 1] 크기의 2차원 텐서로 만듦
         #position = [[0,],[1,]...[4999,]] #인코딩할 위치 번호
-        div_term = torch.exp(torch.arange(0, d_model, 2) * -(np.log(10000.0) / d_model)) #??
+        div_term = torch.exp(torch.arange(0, d_model, 2) * -(np.log(10000.0) / d_model))
         #[0,2,4,...,510]에 아주 작은 음수값을 곱하고, 지수함수를 통해 [1,0.96,...,0.0001]과 같은 값을 만듦
         pe[:, 0::2] = torch.sin(position * div_term) 
         pe[:, 1::2] = torch.cos(position * div_term) #sin, cos 를 통해 위치 정보를 벡터로
@@ -51,7 +51,7 @@ class InputProcess(nn.Module):
 
     def forward(self, x):
         x = x.permute(1, 0, 2) #[seq_len, batch_size, input_feats]
-        x = self.embedding(x)  # [seq_len, batch_size, latent_dim]
+        x = self.embedding(x)  #[seq_len, batch_size, latent_dim]
         return x
     
 class OutputProcess(nn.Module):
@@ -76,6 +76,7 @@ class MotionTransformer(nn.Module):
         self.num_layers = num_layers #Number of transformer layers
         self.num_heads = num_heads #Number of attention heads
         self.dropout = dropout #Dropout rate
+        self.norm = nn.LayerNorm(latent_dim) #Layer normalization
 
         self.input_process = InputProcess(input_feats, latent_dim) #입력 처리 레이어
 
@@ -94,7 +95,7 @@ class MotionTransformer(nn.Module):
         self.seqTransEncoder = nn.TransformerEncoder(
             encoder_layer,
             num_layers=num_layers,
-            norm=None  # TransformerEncoderLayer에서 norm을 사용하지 않음
+            norm=self.norm
         )
 
         self.output_process = OutputProcess(latent_dim, input_feats)
