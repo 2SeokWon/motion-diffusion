@@ -56,7 +56,7 @@ class GaussianDiffusion(nn.Module):
             _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
     
-    def training_losses(self, model, x_start, t, skeleton, mean, std, noise=None):
+    def training_losses(self, model, x_start, t, noise=None):
         if noise is None:
             noise = torch.randn_like(x_start)
         
@@ -68,22 +68,23 @@ class GaussianDiffusion(nn.Module):
         
         loss_simple = F.mse_loss(model_output, target)
         
-        lambda_fk = 1.0
-        loss_fk = torch.tensor(0.0, device=x_start.device)
+        #lambda_fk = 0.0 #가중치 변경 가능 당장은 사용 X
+        #loss_fk = torch.tensor(0.0, device=x_start.device)
 
-        if lambda_fk > 0.0:
-            pred_xstart = self._predict_xstart_from_eps(x_t, t, model_output)
-            target_xyz = features_to_xyz(x_start, skeleton, mean, std)
-            pred_xyz = features_to_xyz(pred_xstart, skeleton, mean, std)
+        #if lambda_fk > 0.0:
+        #    pred_xstart = self._predict_xstart_from_eps(x_t, t, model_output)
+        #    target_xyz = features_to_xyz(x_start, skeleton, mean, std)
+        #    pred_xyz = features_to_xyz(pred_xstart, skeleton, mean, std)
 
-            loss_fk = F.mse_loss(pred_xyz, target_xyz)
+        #    loss_fk = F.mse_loss(pred_xyz, target_xyz)
         
-        final_loss = loss_simple + lambda_fk * loss_fk
-
+        #final_loss = loss_simple + lambda_fk * loss_fk
+        
+        final_loss = loss_simple #현재는 FK loss를 사용하지 않음
         return {
             'loss': final_loss, 
             'loss_simple': loss_simple.item(),
-            'loss_fk': loss_fk.item()
+            #'loss_fk': loss_fk.item()
         }
 
     def p_mean_variance(self, model, x_t, t): #모델을 통해 노이즈 예측하고 예측값으로부터 x_0을 구하고, x_{t-1}의 평균과 분산을 계산

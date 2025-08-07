@@ -1,194 +1,194 @@
 [
     {
-        "path": "clip_0000.npy",
-        "length": 3175
+        "path": "clip_0000.npz",
+        "length": 6350
     },
     {
-        "path": "clip_0001.npy",
-        "length": 4763
+        "path": "clip_0001.npz",
+        "length": 9526
     },
     {
-        "path": "clip_0002.npy",
-        "length": 2353
+        "path": "clip_0002.npz",
+        "length": 4707
     },
     {
-        "path": "clip_0003.npy",
-        "length": 3934
+        "path": "clip_0003.npz",
+        "length": 7868
     },
     {
-        "path": "clip_0004.npy",
-        "length": 895
+        "path": "clip_0004.npz",
+        "length": 1791
     },
     {
-        "path": "clip_0005.npy",
-        "length": 1605
+        "path": "clip_0005.npz",
+        "length": 3211
     },
     {
-        "path": "clip_0006.npy",
-        "length": 3267
+        "path": "clip_0006.npz",
+        "length": 6534
     },
     {
-        "path": "clip_0007.npy",
-        "length": 3212
+        "path": "clip_0007.npz",
+        "length": 6425
     },
     {
-        "path": "clip_0008.npy",
-        "length": 1719
+        "path": "clip_0008.npz",
+        "length": 3439
     },
     {
-        "path": "clip_0009.npy",
-        "length": 2517
+        "path": "clip_0009.npz",
+        "length": 5034
     },
     {
-        "path": "clip_0010.npy",
-        "length": 1690
+        "path": "clip_0010.npz",
+        "length": 3381
     },
     {
-        "path": "clip_0011.npy",
-        "length": 2470
+        "path": "clip_0011.npz",
+        "length": 4941
     },
     {
-        "path": "clip_0012.npy",
-        "length": 898
+        "path": "clip_0012.npz",
+        "length": 1796
     },
     {
-        "path": "clip_0013.npy",
-        "length": 1417
+        "path": "clip_0013.npz",
+        "length": 2834
     },
     {
-        "path": "clip_0014.npy",
-        "length": 2213
+        "path": "clip_0014.npz",
+        "length": 4426
     },
     {
-        "path": "clip_0015.npy",
-        "length": 3819
+        "path": "clip_0015.npz",
+        "length": 7639
     },
     {
-        "path": "clip_0016.npy",
-        "length": 2261
+        "path": "clip_0016.npz",
+        "length": 4522
     },
     {
-        "path": "clip_0017.npy",
-        "length": 3563
+        "path": "clip_0017.npz",
+        "length": 7127
     },
     {
-        "path": "clip_0018.npy",
-        "length": 2755
+        "path": "clip_0018.npz",
+        "length": 5511
     },
     {
-        "path": "clip_0019.npy",
-        "length": 4239
+        "path": "clip_0019.npz",
+        "length": 8479
     },
     {
-        "path": "clip_0020.npy",
-        "length": 804
+        "path": "clip_0020.npz",
+        "length": 1609
     },
     {
-        "path": "clip_0021.npy",
-        "length": 1621
+        "path": "clip_0021.npz",
+        "length": 3243
     },
     {
-        "path": "clip_0022.npy",
-        "length": 2847
+        "path": "clip_0022.npz",
+        "length": 5695
     },
     {
-        "path": "clip_0023.npy",
-        "length": 4215
+        "path": "clip_0023.npz",
+        "length": 8430
     },
     {
-        "path": "clip_0024.npy",
-        "length": 2559
+        "path": "clip_0024.npz",
+        "length": 5119
     },
     {
-        "path": "clip_0025.npy",
-        "length": 3563
+        "path": "clip_0025.npz",
+        "length": 7126
     },
     {
-        "path": "clip_0026.npy",
-        "length": 2143
+        "path": "clip_0026.npz",
+        "length": 4286
     },
     {
-        "path": "clip_0027.npy",
-        "length": 3859
+        "path": "clip_0027.npz",
+        "length": 7718
     },
     {
-        "path": "clip_0028.npy",
-        "length": 981
+        "path": "clip_0028.npz",
+        "length": 1962
     },
     {
-        "path": "clip_0029.npy",
-        "length": 1627
+        "path": "clip_0029.npz",
+        "length": 3254
     },
     {
-        "path": "clip_0030.npy",
-        "length": 2572
+        "path": "clip_0030.npz",
+        "length": 5144
     },
     {
-        "path": "clip_0031.npy",
-        "length": 6414
+        "path": "clip_0031.npz",
+        "length": 12828
     },
     {
-        "path": "clip_0032.npy",
-        "length": 2749
+        "path": "clip_0032.npz",
+        "length": 5498
     },
     {
-        "path": "clip_0033.npy",
-        "length": 6339
+        "path": "clip_0033.npz",
+        "length": 12678
     },
     {
-        "path": "clip_0034.npy",
-        "length": 2502
+        "path": "clip_0034.npz",
+        "length": 5004
     },
     {
-        "path": "clip_0035.npy",
-        "length": 5590
+        "path": "clip_0035.npz",
+        "length": 11180
     },
     {
-        "path": "clip_0036.npy",
-        "length": 1024
+        "path": "clip_0036.npz",
+        "length": 2049
     },
     {
-        "path": "clip_0037.npy",
-        "length": 1625
+        "path": "clip_0037.npz",
+        "length": 3250
     },
     {
-        "path": "clip_0038.npy",
-        "length": 4002
+        "path": "clip_0038.npz",
+        "length": 8004
     },
     {
-        "path": "clip_0039.npy",
-        "length": 5249
+        "path": "clip_0039.npz",
+        "length": 10499
     },
     {
-        "path": "clip_0040.npy",
-        "length": 2385
+        "path": "clip_0040.npz",
+        "length": 4771
     },
     {
-        "path": "clip_0041.npy",
-        "length": 4504
+        "path": "clip_0041.npz",
+        "length": 9009
     },
     {
-        "path": "clip_0042.npy",
-        "length": 2201
+        "path": "clip_0042.npz",
+        "length": 4403
     },
     {
-        "path": "clip_0043.npy",
-        "length": 4661
+        "path": "clip_0043.npz",
+        "length": 9323
     },
     {
-        "path": "clip_0044.npy",
-        "length": 793
+        "path": "clip_0044.npz",
+        "length": 1586
     },
     {
-        "path": "clip_0045.npy",
-        "length": 1432
+        "path": "clip_0045.npz",
+        "length": 2865
     },
     {
-        "path": "clip_0046.npy",
-        "length": 3124
+        "path": "clip_0046.npz",
+        "length": 6249
     },
     {
-        "path": "clip_0047.npy",
-        "length": 6707
+        "path": "clip_0047.npz",
+        "length": 13415
     }
 ]

@@ -11,14 +11,18 @@ class MotionDataset(Dataset):
         self.seq_len = seq_len
 
         metadata_path = os.path.join(processed_data_path, "metadata.json")
-        mean_path = os.path.join(processed_data_path, "mean.npy")
-        std_path = os.path.join(processed_data_path, "std.npy")
+        pos_vel_mean_path = os.path.join(processed_data_path, "pos_vel_mean.npy")
+        pos_vel_std_path = os.path.join(processed_data_path, "pos_vel_std.npy")
+        rotation_mean_path = os.path.join(processed_data_path, "rotation_mean.npy")
+        rotation_std_path = os.path.join(processed_data_path, "rotation_std.npy")
 
         with open(metadata_path, 'r') as f:
             self.metadata = json.load(f)
             
-        self.mean_np = np.load(mean_path)
-        self.std_np = np.load(std_path)
+        self.pos_vel_mean = np.load(pos_vel_mean_path)
+        self.pos_vel_std = np.load(pos_vel_std_path)
+        self.rotation_mean = np.load(rotation_mean_path)
+        self.rotation_std = np.load(rotation_std_path)
 
          # 2. 가중 샘플링을 위한 준비
         #    - 각 클립의 길이가 SEQ_LEN보다 짧으면 제외
@@ -32,10 +36,8 @@ class MotionDataset(Dataset):
                 self.weights.append(clip_info['length'])
         
         self.weights = np.array(self.weights, dtype=np.float32)
-        self.weights /= self.weights.sum() # 전체 합이 1이 되도록 정규화
-
-        self.mean = torch.from_numpy(self.mean_np).float()
-        self.std = torch.from_numpy(self.std_np).float()
+        if len(self.weights) > 0:
+            self.weights /= self.weights.sum()
 
         self.virtual_dataset_size = 0
         for clip_info in self.sampleable_clips:
@@ -56,7 +58,8 @@ class MotionDataset(Dataset):
         
         # 2. 선택된 클립의 .npy 파일 로드
         clip_path = os.path.join(self.processed_data_path, selected_clip_info['path'])
-        clip_data = np.load(clip_path)
+        with np.load(clip_path) as data:
+            clip_data = data['features']
         
         # 3. 클립 내에서 랜덤한 시작 프레임 선택
         clip_length = selected_clip_info['length']
@@ -65,7 +68,10 @@ class MotionDataset(Dataset):
         
         # 4. SEQ_LEN 길이만큼 클립을 잘라냄
         motion_segment = clip_data[start_frame : start_frame + self.seq_len]
+
+        pos_vel_part = (motion_segment[:, :3] - self.pos_vel_mean) / self.pos_vel_std
+        rotation_part = (motion_segment[:, 3:] - self.rotation_mean) / self.rotation_std
         
         # 5. 정규화 및 텐서로 변환
-        normalized_segment = (motion_segment - self.mean_np) / self.std_np
+        normalized_segment = np.concatenate([pos_vel_part, rotation_part], axis=1)
         return torch.from_numpy(normalized_segment).float()

@@ -19,7 +19,7 @@ def train():
 
     njoints = 23
     rotation_features = 6
-    root_motion_features = 4 # 루트 Y높이(1) + 수평속도(2) + Y회전속도(1)
+    root_motion_features = 3 # 루트 Y높이(1) + 수평속도(2) 원래 y축 회전도 넣었는데 제외 
 
     joint_rotation_features = njoints * rotation_features
     input_feats = root_motion_features + joint_rotation_features
@@ -39,7 +39,7 @@ def train():
     dataset = MotionDataset(processed_data_path=processed_data_path, seq_len=seq_len)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     print("Dataset loaded successfully.")
-
+    '''
     try:
         offsets = np.load(os.path.join(processed_data_path, "offsets.npy"))
         parents = np.load(os.path.join(processed_data_path, "parents.npy"))
@@ -49,9 +49,15 @@ def train():
 
     skeleton = Skeleton(offsets=offsets, parents=parents, device=device)
     
-    mean_tensor = dataset.mean.to(device)
-    std_tensor = dataset.std.to(device)   
+    mean_pos_vel = torch.from_numpy(dataset.pos_vel_mean).float().to(device)
+    std_pos_vel = torch.from_numpy(dataset.pos_vel_std).float().to(device)
+    mean_rotation = torch.from_numpy(dataset.rotation_mean).float().to(device)
+    std_rotation = torch.from_numpy(dataset.rotation_std).float().to(device)
 
+    mean_tensor = torch.cat([mean_pos_vel, mean_rotation], dim=1)
+    std_tensor = torch.cat([std_pos_vel, std_rotation], dim=1)  
+    '''
+    
     print("Initializing model...")
     model = MotionTransformer(
         njoints=njoints,
@@ -73,8 +79,8 @@ def train():
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
-        total_fk_loss = 0.0
-        total_simple_loss = 0.0
+        #total_fk_loss = 0.0
+        #total_simple_loss = 0.0
 
         progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False)
 
@@ -85,7 +91,7 @@ def train():
 
             optimizer.zero_grad()
 
-            loss_dict = diffusion.training_losses(model, x_start, t, skeleton=skeleton, mean=mean_tensor, std=std_tensor)
+            loss_dict = diffusion.training_losses(model, x_start, t, noise=None)
             loss = loss_dict['loss']
 
             loss.backward()
@@ -93,13 +99,13 @@ def train():
             optimizer.step()
 
             total_loss += loss.item()
-            total_fk_loss += loss_dict['loss_fk']
-            total_simple_loss += loss_dict['loss_simple']
+            #total_fk_loss += loss_dict['loss_fk']
+            #total_simple_loss += loss_dict['loss_simple']
 
             progress_bar.set_postfix({
                 'loss': f'{total_loss / (progress_bar.n + 1):.4f}',
-                'fk_loss': f'{total_fk_loss / (progress_bar.n + 1):.4f}',
-                'simple_loss': f'{total_simple_loss / (progress_bar.n + 1):.4f}'
+                #'fk_loss': f'{total_fk_loss / (progress_bar.n + 1):.4f}',
+                #'simple_loss': f'{total_simple_loss / (progress_bar.n + 1):.4f}'
             })
         
         avg_loss = total_loss / len(dataloader)

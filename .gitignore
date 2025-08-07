@@ -1,4 +1,10 @@
 bvh_viewer/
+verification/
+processed_data/
 results/
 results_1/
+checkpoints/
+checkpoints_1/
 *.bvh
+check_feature_reconstruction.py
+check_y_position.py

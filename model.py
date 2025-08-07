@@ -114,6 +114,6 @@ class MotionTransformer(nn.Module):
 
         output = output[1:]
 
-        predicted_noise = self.output_process(output)  # [batch_size, seq_len, njoints * nfeats]
+        predicted_noise = self.output_process(output)  # [batch_size, seq_len, input_feats]
         
         return predicted_noise

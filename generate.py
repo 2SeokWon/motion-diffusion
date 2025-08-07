@@ -20,7 +20,7 @@ def generate():
     # --- 고정된 설정값들 ---
     njoints = 23
     rotation_features = 6
-    root_motion_features = 4
+    root_motion_features = 3
     input_feats = root_motion_features + (njoints * rotation_features)
     num_timesteps = 1000
     
