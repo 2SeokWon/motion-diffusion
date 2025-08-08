@@ -9,4 +9,4 @@ checkpoints_1/
 check_feature_reconstruction.py
 check_y_position.py
 check_preprocessing.py
-verify_normalization_pipeline.py
+verigy_normalization_pipeline.py
