@@ -20,7 +20,7 @@ def generate():
     # --- 고정된 설정값들 ---
     njoints = 23
     rotation_features = 6
-    root_motion_features = 3
+    root_motion_features = 4
     input_feats = root_motion_features + (njoints * rotation_features)
     num_timesteps = 1000
     
@@ -65,8 +65,8 @@ def generate():
         model, diffusion, dataset,
         num_samples=args.num_samples,
         seq_len=args.seq_len,
-        input_feats=input_feats,
-        root_motion_features=root_motion_features,
+        #input_feats=input_feats,
+        #root_motion_features=root_motion_features,
         template_path=skeleton_template_path,
         output_dir=output_bvh_dir,
         device=device

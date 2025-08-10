@@ -1,3 +1,4 @@
+#dataset.py
 import os
 import json
 import random
@@ -6,7 +7,7 @@ import torch
 from torch.utils.data import Dataset
 
 class MotionDataset(Dataset):
-    def __init__(self, processed_data_path, seq_len=90):
+    def __init__(self, processed_data_path, seq_len=180, feat_bias=10.0):
         self.processed_data_path = processed_data_path
         self.seq_len = seq_len
 
@@ -20,7 +21,11 @@ class MotionDataset(Dataset):
             self.metadata = json.load(f)
             
         self.pos_vel_mean = np.load(pos_vel_mean_path)
-        self.pos_vel_std = np.load(pos_vel_std_path)
+        pos_vel_std = np.load(pos_vel_std_path)
+        pos_vel_std += 1e-8 # 0으로 나누는 것을 방지
+        pos_vel_std /= feat_bias
+
+        self.pos_vel_std = pos_vel_std
         self.rotation_mean = np.load(rotation_mean_path)
         self.rotation_std = np.load(rotation_std_path)
 
@@ -69,8 +74,8 @@ class MotionDataset(Dataset):
         # 4. SEQ_LEN 길이만큼 클립을 잘라냄
         motion_segment = clip_data[start_frame : start_frame + self.seq_len]
 
-        pos_vel_part = (motion_segment[:, :3] - self.pos_vel_mean) / self.pos_vel_std
-        rotation_part = (motion_segment[:, 3:] - self.rotation_mean) / self.rotation_std
+        pos_vel_part = (motion_segment[:, :4] - self.pos_vel_mean) / self.pos_vel_std
+        rotation_part = (motion_segment[:, 4:] - self.rotation_mean) / self.rotation_std
         
         # 5. 정규화 및 텐서로 변환
         normalized_segment = np.concatenate([pos_vel_part, rotation_part], axis=1)

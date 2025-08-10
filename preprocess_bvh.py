@@ -84,13 +84,15 @@ try:
 except ValueError as e:
     print(f"Error: Required joints not found in skeleton: {e}"); exit()
 
+    
+
 for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
     filepath = os.path.join(bvh_folder_path, filename)
     try:
         motion_data_euler = parse_bvh_motion_data(filepath)
         if motion_data_euler is None or motion_data_euler.shape[0] < 20: continue
             
-        #motion_data_euler = motion_data_euler[::2, :]
+        motion_data_euler = motion_data_euler[::2, :]
         num_frames = motion_data_euler.shape[0]
 
         # 1. 원본 BVH 데이터 로드 (이름에 _orig를 붙여 구분)
@@ -107,14 +109,12 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
             torch.from_numpy(rotations_quat_np_orig).float().unsqueeze(0),
             torch.from_numpy(root_positions_np_orig).float().unsqueeze(0)
         ).squeeze(0).numpy()
-        if idx == 47:
-            print(positions_3d_orig)
-        # 3. 데이터 정규화 (이 코드는 올바르게 적용되었습니다)
+
+        # 3. 데이터 정규화
         positions_3d_normalized = positions_3d_orig.copy() # 원본 보존을 위해 복사
         
         # 바닥에 놓기
         floor_height = positions_3d_normalized.reshape(-1, 3)[:, 1].min()
-
         positions_3d_normalized[:, :, 1] -= floor_height
         
         # 초기 위치 원점 맞추기
@@ -129,7 +129,6 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
 
         # 4. 정규화된 위치로부터 회전 정보 재추출 (Inverse Kinematics)
         #    이것이 가장 정확하지만, 계산이 복잡하고 느릴 수 있음.
-        #    대안: 원본 회전 정보를 사용하되, 이것이 오차의 원인이 될 수 있음을 인지.
         #    여기서는 일단 원본 회전(rotations_quat_np_orig)을 그대로 사용하겠습니다.
         rotations_quat_np = rotations_quat_np_orig
         
@@ -143,7 +142,8 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
                 facing_rotations_quat[i] = facing_rotations_quat[i-1] if i > 0 else np.array([0, 0, 0, 1])
             else:
                 forward = np.cross([0, 1, 0], across / norm)
-                facing_rot = Rotation.align_vectors([[0, 0, 1]], forward[np.newaxis, :])[0]
+                yaw_angle_rad = np.arctan2(forward[0], forward[2])
+                facing_rot = Rotation.from_euler('y', yaw_angle_rad, degrees=False)
                 facing_rotations_quat[i] = facing_rot.as_quat()
         
         # 6. Global -> Local Root Orientation 계산
@@ -162,103 +162,38 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
         
         # 8. 루트 속도 계산 (정규화된 위치 사용!)
         normalized_root_positions = positions_3d_normalized[:, 0, :]
-        print(f"Normalized Root Positions Mean: {normalized_root_positions}")
         root_velocity_global_normalized = normalized_root_positions[1:] - normalized_root_positions[:-1]
         
         inv_facing_rotations_prev = Rotation.from_quat(facing_rotations_quat[:-1]).inv()
         root_velocity_local = inv_facing_rotations_prev.apply(root_velocity_global_normalized)
         
-        #root_rot_quat_diff = (root_global_rotations[1:] * root_global_rotations[:-1].inv()).as_quat()
-        #root_angular_velocity_y = Rotation.from_quat(root_rot_quat_diff).as_euler('yxz', degrees=False)[:, 0]
+        facing_rotations_obj = Rotation.from_quat(facing_rotations_quat)
+        facing_rot_quat_diff = (facing_rotations_obj[1:] * facing_rotations_obj[:-1].inv()).as_quat()
+        root_angular_velocity_y = Rotation.from_quat(facing_rot_quat_diff).as_euler('yxz', degrees=False)[:, 0]
 
         # 9. 최종 특징 벡터 조립 (정규화된 값 사용!)
-        root_y_height = normalized_root_positions[1:, [1]] # <-- 핵심 수정
-        if idx == 47:
-            print(f"Root Y Height Mean: {root_y_height.mean():.4f}")
+        root_y_height = normalized_root_positions[1:, [1]]
         root_xz_velocity = root_velocity_local[:, [0, 2]]
-        #root_y_angular_velocity = root_angular_velocity_y[:, np.newaxis]
+        root_y_angular_velocity = root_angular_velocity_y[:, np.newaxis]
+
+        joint_positions_normalized = positions_3d_normalized[1:, 1:, :].reshape(num_frames-1, -1)
+        joint_velocities = positions_3d_normalized[1:] - positions_3d_normalized[:-1]
+        joint_velocities_flat = joint_velocities.reshape(num_frames-1, -1)
+
         all_joint_6d_rotations = all_local_rotations_6d[1:, :]
-        
+     
         final_features = np.concatenate([
-            root_y_height,
-            root_xz_velocity,
-            #root_y_angular_velocity,
+            root_y_height, #1
+            root_xz_velocity, #2
+            root_y_angular_velocity, #1
             all_joint_6d_rotations
         ], axis=1)   
-
+        
+        '''
         if idx == 47:
             print(f"Final Features Y Height Mean: {final_features[:, 0].mean():.4f}")
             print("-" * 30)     
-        '''
-        root_rotations_deg = motion_data_euler[:, 3:6] # [num_frames, 3]
-        joint_rotations_deg = motion_data_euler[:, 6:] # [num_frames, 22 * 3]
         
-
-        # (3) 오일러 각도를 Quaternion으로 변환, 회전 계산을 위해서 [num_frames, 4]
-        root_rotations_quat = Rotation.from_euler(ROTATION_ORDER, root_rotations_deg, degrees=True).as_quat()
-        
-        #이전 프레임 대비 루트 위치 및 회전 변화량 계산 [num_frames - 1, 3] 근데 월드좌표계 기준임
-        root_velocity = root_positions[1:] - root_positions[:-1]
-
-        # 루트 회전 변화량 계산 t-1에서 t로 넘어갈 때 캐릭터의 회전 변화량 
-        root_rot_quat_diff = (
-            Rotation.from_quat(root_rotations_quat[1:]) * #현재 프레임의 root 회전
-            Rotation.from_quat(root_rotations_quat[:-1]).inv() #이전 프레임의 root 역회전
-        ).as_quat()
-
-        #변화량을 루트의 로컬 좌표계 기준으로 변환
-        inv_root_rotations = Rotation.from_quat(root_rotations_quat[:-1]).inv() #이전 프레임의 역회전
-        root_velocity_local = inv_root_rotations.apply(root_velocity)
-        
-        #Y축 회전 변화량만 추출, 캐릭터가 어느 방향으로 나아가는지?
-        root_angular_velocity_y = Rotation.from_quat(root_rot_quat_diff).as_euler('yxz', degrees=True)[:, 0]
-
-        #오일러 각을 6d로 변환, 짐벌락 없애야 하니까
-        all_rotations_deg = np.concatenate([root_rotations_deg, joint_rotations_deg], axis=1) #root position만 제외
-        all_rotations_rad = np.deg2rad(all_rotations_deg) #degree to radian [100, 69]
-        num_joints = all_rotations_rad.shape[1] // 3
-        rotations_tensor = torch.from_numpy(all_rotations_rad).float() #pytorch tensor로 변환
-        rotations_tensor = rotations_tensor.reshape(num_frames, num_joints, 3)
-        
-        # (c) euler_to_sixd 함수 호출 
-        # 여기서부터 다시 확인
-        sixd_rotations_tensor = euler_to_sixd(rotations_tensor, order=ROTATION_ORDER) #오일러 각도를 6D로
-        
-        # (d) 다시 NumPy 배열로 변환하고 평탄화 (Flatten)
-        sixd_rotations_np = sixd_rotations_tensor.numpy()
-        sixd_rotations_flat = sixd_rotations_np.reshape(num_frames, -1)
-
-        # (e) Root Local Orientation 계산
-        facing_rotations_deg_y = root_rotations_deg[:, 0] #루트 관절의 Y축 회전만 추출
-        facing_rotations_quat = Rotation.from_euler('y', facing_rotations_deg_y, degrees=True).as_quat() #쿼터니언으로 변환
-
-        inv_facing_rotations = Rotation.from_quat(facing_rotations_quat).inv()
-        root_global_rotations = Rotation.from_quat(root_rotations_quat)
-
-        root_local_rotations_quat = (inv_facing_rotations * root_global_rotations).as_quat() #루트 관절의 로컬 회전
-
-        root_local_rotations_rad = Rotation.from_quat(root_local_rotations_quat).as_euler(ROTATION_ORDER, degrees=False)
-        root_local_rotations_6d = euler_to_sixd(torch.from_numpy(root_local_rotations_rad).float().unsqueeze(0), order='yxz').squeeze(0).numpy()
-
-        all_rotations_6d_np = sixd_rotations_flat.copy()
-        all_rotations_6d_np[:, :6] = root_local_rotations_6d #루트 관절의 6D 회전으로 대체
-        
-        # 첫 프레임은 속도를 계산할 수 없으므로, 두 번째 프레임부터 시작합니다.
-        # 따라서 모든 데이터의 길이는 (num_frames - 1)이 됩니다.
-        root_y_height = root_positions[1:, [1]]  # shape (N-1, 1)
-        root_xz_velocity = root_velocity_local[:, [0, 2]] # shape (N-1, 2)
-        root_y_angular_velocity = root_angular_velocity_y[:, np.newaxis] # shape (N-1, 1)
-
-        all_joint_6d_rotations = all_rotations_6d_np[1:, :]  # shape (N-1, Joints * 6)
-        
-        final_features = np.concatenate([ #결국 학습에선 이걸 사용
-            root_y_height,
-            root_xz_velocity,
-            root_y_angular_velocity,
-            all_joint_6d_rotations
-        ], axis=1)
-        '''
-
         print(f"\n\n--- Debugging Preprocessing for: {filename} ---")
         frame_to_check = 50
         
@@ -288,6 +223,8 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
             print("  => FAILURE: There is an issue in the local orientation calculation.")
             exit(1)
         print("-" * 50)
+
+        '''
         clip_filename = f"clip_{idx:04d}.npz"
         clip_filepath = os.path.join(output_processed_dir, clip_filename)
 
@@ -318,8 +255,8 @@ print("\n--- Verifying final concatenated data before stats ---")
 full_dataset_np = np.concatenate(all_clips_for_stats, axis=0)
 print(f"Y Height Mean in full dataset: {full_dataset_np[:, 0].mean():.4f}")
 
-pos_vel_features = full_dataset_np[:, :3]  # Root position and velocity features
-rotation_features = full_dataset_np[:, 3:]  # Joint rotations
+pos_vel_features = full_dataset_np[:, :4]  # Root position and velocity features
+rotation_features = full_dataset_np[:, 4:]  # Joint rotations
 
 pos_vel_mean = np.mean(pos_vel_features, axis=0, keepdims=True)
 pos_vel_std = np.std(pos_vel_features, axis=0, keepdims=True)

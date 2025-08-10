@@ -103,10 +103,12 @@ def sixd_to_rotation_matrix(sixd_vectors):
     x_raw = sixd_vectors[..., 0:3]
     y_raw = sixd_vectors[..., 3:6]
 
-    x = F.normalize(x_raw, dim=-1)
+    eps = 1e-8
+
+    x = F.normalize(x_raw, p=2, dim=-1, eps=eps)
 
     z = torch.cross(x, y_raw, dim=-1)
-    z = F.normalize(z, dim=-1)
+    z = F.normalize(z, p=2, dim=-1, eps=eps)
 
     y = torch.cross(z, x, dim=-1)
 
@@ -187,6 +189,36 @@ def matrix_to_quaternion(matrix):
         q[mask, 2] = (m21[mask] + m12[mask]) / (4.0 * q[mask, 3])
         
     return q
+
+# Scipy를 기반으로 하는 새롭고 안정적인 함수를 추가합니다.
+def matrix_to_quaternion_scipy(matrix):
+    """
+    [신규 함수 - 안정화 버전]
+    (..., 3, 3) 모양의 회전 행렬 텐서를 (..., 4) 모양의 쿼터니언 텐서(w,x,y,z)로 변환합니다.
+    Scipy를 사용하여 안정성과 다차원 배열 처리를 보장합니다.
+    """
+    original_shape = matrix.shape[:-2]
+    
+    # 2. 4D (또는 그 이상) 텐서를 3D (N, 3, 3) 형태로 펼칩니다.
+    reshaped_matrix = matrix.reshape(-1, 3, 3)
+    # ------------------
+
+    # Scipy는 numpy 배열을 입력으로 받으므로, 텐서를 numpy로 변환
+    matrix_np = reshaped_matrix.detach().cpu().contiguous().numpy()
+    
+    # Scipy의 from_matrix는 (x,y,z,w) 순서의 쿼터니언을 반환
+    quat_xyzw = Rotation.from_matrix(matrix_np).as_quat()
+    
+    # (w,x,y,z) 순서로 변경
+    quat_wxyz = quat_xyzw[..., [3, 0, 1, 2]]
+
+    # --- [핵심 수정] ---
+    # 3. 원래의 다차원 모양으로 다시 되돌립니다. (예: (3175, 23, 4))
+    final_quat = torch.from_numpy(quat_wxyz).to(matrix.device, dtype=matrix.dtype)
+    final_quat = final_quat.reshape(original_shape + (4,))
+    # ------------------
+    
+    return final_quat
 
 def quat_to_rotmat(quat):
     """

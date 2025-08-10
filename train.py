@@ -1,3 +1,5 @@
+#train.py
+import model
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -13,50 +15,35 @@ from kinematics import Skeleton
 
 def train():
     learning_rate = 1e-4
-    num_epochs = 100
-    batch_size = 32
+    weight_decay = 0.05
+    lr_anneal_steps = 200000
+    num_epochs = 500
+    batch_size = 512
+    num_workers = 8
     save_interval = 10
 
     njoints = 23
     rotation_features = 6
-    root_motion_features = 3 # 루트 Y높이(1) + 수평속도(2) 원래 y축 회전도 넣었는데 제외 
+    root_motion_features = 4 # 루트 Y높이(1) + 수평속도(2) + y축 각속도(1) 
 
     joint_rotation_features = njoints * rotation_features
     input_feats = root_motion_features + joint_rotation_features
 
-    seq_len = 90
+    seq_len = 180
     num_timesteps = 1000
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
     save_dir = "./checkpoints"
-    output_bvh_dir = "./results"
+    output_bvh_dir = "./results_final"
     processed_data_path = "./processed_data"
     os.makedirs(save_dir, exist_ok=True)
     os.makedirs(output_bvh_dir, exist_ok=True)
 
     dataset = MotionDataset(processed_data_path=processed_data_path, seq_len=seq_len)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     print("Dataset loaded successfully.")
-    '''
-    try:
-        offsets = np.load(os.path.join(processed_data_path, "offsets.npy"))
-        parents = np.load(os.path.join(processed_data_path, "parents.npy"))
-    except FileNotFoundError:
-        print("Error: 'offsets.npy' or 'parents.npy' not found. Please run preprocess.py first.")
-        return
-
-    skeleton = Skeleton(offsets=offsets, parents=parents, device=device)
-    
-    mean_pos_vel = torch.from_numpy(dataset.pos_vel_mean).float().to(device)
-    std_pos_vel = torch.from_numpy(dataset.pos_vel_std).float().to(device)
-    mean_rotation = torch.from_numpy(dataset.rotation_mean).float().to(device)
-    std_rotation = torch.from_numpy(dataset.rotation_std).float().to(device)
-
-    mean_tensor = torch.cat([mean_pos_vel, mean_rotation], dim=1)
-    std_tensor = torch.cat([std_pos_vel, std_rotation], dim=1)  
-    '''
     
     print("Initializing model...")
     model = MotionTransformer(
@@ -71,8 +58,9 @@ def train():
 
     diffusion = GaussianDiffusion(betas=betas).to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    print("Model initialized successfully.")
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=lr_anneal_steps)
+    print("Model, Optimizer, and Scheduler initialized successfully.")
 
     # --- 훈련 Loop ---
     print("Starting training...")
@@ -97,6 +85,7 @@ def train():
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Gradient clipping
             optimizer.step()
+            scheduler.step()
 
             total_loss += loss.item()
             #total_fk_loss += loss_dict['loss_fk']
@@ -104,6 +93,7 @@ def train():
 
             progress_bar.set_postfix({
                 'loss': f'{total_loss / (progress_bar.n + 1):.4f}',
+                'lr': f'{scheduler.get_last_lr()[0]:.6f}',
                 #'fk_loss': f'{total_fk_loss / (progress_bar.n + 1):.4f}',
                 #'simple_loss': f'{total_simple_loss / (progress_bar.n + 1):.4f}'
             })
