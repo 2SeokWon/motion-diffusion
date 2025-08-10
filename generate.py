@@ -13,7 +13,7 @@ def generate():
                         help="Path to the model checkpoint (.pt) file.")
     parser.add_argument('--num_samples', type=int, default=5,
                         help="Number of motion samples to generate.")
-    parser.add_argument('--seq_len', type=int, default=90,
+    parser.add_argument('--seq_len', type=int, default=180,
                         help="Length of the generated motion sequence in frames.")
     args = parser.parse_args()
 
@@ -27,7 +27,7 @@ def generate():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     
-    output_bvh_dir = "./results_1"
+    output_bvh_dir = "./results"
     processed_data_path = "./processed_data"
     skeleton_template_path = "./dataset/Aeroplane_BR.bvh"
     os.makedirs(output_bvh_dir, exist_ok=True)

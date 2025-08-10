@@ -95,7 +95,7 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
         motion_data_euler = motion_data_euler[::2, :]
         num_frames = motion_data_euler.shape[0]
 
-        # 1. 원본 BVH 데이터 로드 (이름에 _orig를 붙여 구분)
+        # 1. 원본 BVH 데이터 로드
         root_positions_np_orig = motion_data_euler[:, :3]
         rotations_deg_orig = motion_data_euler[:, 3:]
         num_joints = rotations_deg_orig.shape[1] // 3
@@ -121,15 +121,7 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
         root_pos_init_xz = positions_3d_normalized[0, 0, :] * np.array([1, 0, 1])
         positions_3d_normalized = positions_3d_normalized - root_pos_init_xz
 
-        if idx == 47:
-            print(f"\n--- Debugging {filename} ---")
-            print(f"Original Y Height Mean: {root_positions_np_orig[:, 1].mean():.4f}")
-            print(f"Normalized Y Height Mean: {positions_3d_normalized[:, :, 1].mean():.4f}")
-        # --- 이제부터 모든 계산은 'positions_3d_normalized'를 기반으로 해야 합니다 ---
-
         # 4. 정규화된 위치로부터 회전 정보 재추출 (Inverse Kinematics)
-        #    이것이 가장 정확하지만, 계산이 복잡하고 느릴 수 있음.
-        #    여기서는 일단 원본 회전(rotations_quat_np_orig)을 그대로 사용하겠습니다.
         rotations_quat_np = rotations_quat_np_orig
         
         # 5. 정규화된 위치로부터 Facing Rotation 계산
@@ -149,7 +141,7 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
         # 6. Global -> Local Root Orientation 계산
         root_global_rotations = Rotation.from_quat(rotations_quat_np[:, 0, :])
         facing_rotations = Rotation.from_quat(facing_rotations_quat)
-        root_local_rotations = facing_rotations.inv() * root_global_rotations
+        root_local_rotations = facing_rotations.inv() * root_global_rotations #몸만 튼 방향
         root_local_rotations_quat = root_local_rotations.as_quat()
         
         # 7. 모든 관절의 Local Orientation을 6D로 변환
@@ -160,7 +152,7 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
         all_local_rotations_rad = Rotation.from_quat(all_local_rotations_quat.reshape(-1, 4)).as_euler('yxz', degrees=False)
         all_local_rotations_6d = euler_to_sixd(torch.from_numpy(all_local_rotations_rad).float()).numpy().reshape(num_frames, -1)
         
-        # 8. 루트 속도 계산 (정규화된 위치 사용!)
+        # 8. 루트 속도 계산 (정규화된 위치 사용)
         normalized_root_positions = positions_3d_normalized[:, 0, :]
         root_velocity_global_normalized = normalized_root_positions[1:] - normalized_root_positions[:-1]
         
@@ -177,8 +169,8 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
         root_y_angular_velocity = root_angular_velocity_y[:, np.newaxis]
 
         joint_positions_normalized = positions_3d_normalized[1:, 1:, :].reshape(num_frames-1, -1)
-        joint_velocities = positions_3d_normalized[1:] - positions_3d_normalized[:-1]
-        joint_velocities_flat = joint_velocities.reshape(num_frames-1, -1)
+        #joint_velocities = positions_3d_normalized[1:] - positions_3d_normalized[:-1]
+        #joint_velocities_flat = joint_velocities.reshape(num_frames-1, -1)
 
         all_joint_6d_rotations = all_local_rotations_6d[1:, :]
      
@@ -186,45 +178,9 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
             root_y_height, #1
             root_xz_velocity, #2
             root_y_angular_velocity, #1
-            all_joint_6d_rotations
+            all_joint_6d_rotations # 23 * 6 = 138
         ], axis=1)   
         
-        '''
-        if idx == 47:
-            print(f"Final Features Y Height Mean: {final_features[:, 0].mean():.4f}")
-            print("-" * 30)     
-        
-        print(f"\n\n--- Debugging Preprocessing for: {filename} ---")
-        frame_to_check = 50
-        
-        # 1. 원본 Global Rotation
-        original_global_rot_deg = motion_data_euler[frame_to_check, 3:6]
-        print(f"\n[Frame {frame_to_check}] Original Global Rotation (YXZ, deg):")
-        print(f"  Y(facing): {original_global_rot_deg[0]:.2f}, X(pitch): {original_global_rot_deg[1]:.2f}, Z(roll): {original_global_rot_deg[2]:.2f}")
-
-        # 2. 계산된 Local Rotation
-        calculated_local_rot_deg = Rotation.from_quat(root_local_rotations_quat[frame_to_check]).as_euler('yxz', degrees=True)
-        print(f"\n[Frame {frame_to_check}] Calculated Local Rotation (YXZ, deg):")
-        print(f"  Y(facing): {calculated_local_rot_deg[0]:.2f}, X(pitch): {calculated_local_rot_deg[1]:.2f}, Z(roll): {calculated_local_rot_deg[2]:.2f}")
-        
-        # 3. 검증
-        facing_rot_obj = Rotation.from_quat(facing_rotations_quat[frame_to_check])
-        local_rot_obj = Rotation.from_quat(root_local_rotations_quat[frame_to_check])
-        reconstructed_global_rot_obj = facing_rot_obj * local_rot_obj
-        original_global_rot_obj = Rotation.from_quat(rotations_quat_np[frame_to_check, 0, :])
-        
-        dot_product = np.abs(np.dot(reconstructed_global_rot_obj.as_quat(), original_global_rot_obj.as_quat()))
-        
-        print("\n--- Verification ---")
-        print(f"  -> Dot product of quaternions: {dot_product:.6f} (1.0에 가까워야 함)")
-        if np.isclose(dot_product, 1.0):
-            print("  => SUCCESS: Local orientation was calculated correctly!")
-        else:
-            print("  => FAILURE: There is an issue in the local orientation calculation.")
-            exit(1)
-        print("-" * 50)
-
-        '''
         clip_filename = f"clip_{idx:04d}.npz"
         clip_filepath = os.path.join(output_processed_dir, clip_filename)
 

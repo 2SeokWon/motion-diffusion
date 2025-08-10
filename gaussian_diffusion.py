@@ -67,6 +67,13 @@ class GaussianDiffusion(nn.Module):
         target = noise
         
         loss_simple = F.mse_loss(model_output, target)
+
+        pred_x_start = self._predict_xstart_from_eps(x_t, t, model_output)
+        target_velocity = x_start[:, 1:] - x_start[:, :-1] #x_start의 속도, (batch_size, seq_len-1, input_feats)
+        pred_velocity = pred_x_start[:, 1:] - pred_x_start[:, :-1]
+        loss_vel = F.mse_loss(pred_velocity, target_velocity)
+
+        lambda_vel = 0.3 #속도에 대한 가중치
         
         #lambda_fk = 0.0 #가중치 변경 가능 당장은 사용 X
         #loss_fk = torch.tensor(0.0, device=x_start.device)
@@ -78,13 +85,13 @@ class GaussianDiffusion(nn.Module):
 
         #    loss_fk = F.mse_loss(pred_xyz, target_xyz)
         
-        #final_loss = loss_simple + lambda_fk * loss_fk
+        final_loss = loss_simple + lambda_vel * loss_vel
         
         final_loss = loss_simple #현재는 FK loss를 사용하지 않음
         return {
             'loss': final_loss, 
             'loss_simple': loss_simple.item(),
-            #'loss_fk': loss_fk.item()
+            'loss_vel': loss_vel.item()
         }
 
     def p_mean_variance(self, model, x_t, t): #모델을 통해 노이즈 예측하고 예측값으로부터 x_0을 구하고, x_{t-1}의 평균과 분산을 계산

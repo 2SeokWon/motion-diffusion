@@ -19,13 +19,8 @@ def euler_to_sixd(euler_angles_rad, order='yxz'):
     # 각 축에 대한 코사인 및 사인 값 계산
     # order에 따라 각도의 의미가 달라짐
     # 예를 들어 'yxz'일 경우 euler_angles_rad[..., 0]은 Y축 회전값
-    c1 = torch.cos(euler_angles_rad[..., 0])
-    s1 = torch.sin(euler_angles_rad[..., 0])
-    c2 = torch.cos(euler_angles_rad[..., 1])
-    s2 = torch.sin(euler_angles_rad[..., 1])
-    c3 = torch.cos(euler_angles_rad[..., 2])
-    s3 = torch.sin(euler_angles_rad[..., 2])
-        
+
+     
     if order.lower() == 'yxz':
         # Y(1), X(2), Z(3) 순서
         # 3x3 회전 행렬의 첫 두 열 계산

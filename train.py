@@ -36,10 +36,8 @@ def train():
     print(f"Using device: {device}")
 
     save_dir = "./checkpoints"
-    output_bvh_dir = "./results_final"
     processed_data_path = "./processed_data"
     os.makedirs(save_dir, exist_ok=True)
-    os.makedirs(output_bvh_dir, exist_ok=True)
 
     dataset = MotionDataset(processed_data_path=processed_data_path, seq_len=seq_len)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
@@ -67,6 +65,7 @@ def train():
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
+        total_vel_loss = 0.0
         #total_fk_loss = 0.0
         #total_simple_loss = 0.0
 
@@ -88,12 +87,14 @@ def train():
             scheduler.step()
 
             total_loss += loss.item()
+            total_vel_loss += loss_dict['loss_vel']
             #total_fk_loss += loss_dict['loss_fk']
             #total_simple_loss += loss_dict['loss_simple']
 
             progress_bar.set_postfix({
                 'loss': f'{total_loss / (progress_bar.n + 1):.4f}',
                 'lr': f'{scheduler.get_last_lr()[0]:.6f}',
+                'vel_loss': f'{total_vel_loss / (progress_bar.n + 1):.4f}',
                 #'fk_loss': f'{total_fk_loss / (progress_bar.n + 1):.4f}',
                 #'simple_loss': f'{total_simple_loss / (progress_bar.n + 1):.4f}'
             })

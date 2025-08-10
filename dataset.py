@@ -56,7 +56,6 @@ class MotionDataset(Dataset):
         return self.virtual_dataset_size
 
     def __getitem__(self, index):
-        # 'index'는 무시하고, 매번 가중치에 따라 랜덤하게 클립을 선택
         
         # 1. 클립 길이에 비례하여 랜덤하게 클립 하나를 선택
         selected_clip_info = random.choices(self.sampleable_clips, weights=self.weights, k=1)[0]
