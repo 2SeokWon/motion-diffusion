@@ -1,6 +1,7 @@
 import torch
 import os
 import argparse
+from datetime import datetime
 
 from model import MotionTransformer
 from gaussian_diffusion import GaussianDiffusion
@@ -27,10 +28,13 @@ def generate():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     
-    output_bvh_dir = "./results"
+    # 현재 시간을 포함한 고유한 출력 폴더 생성
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    output_bvh_dir = f"./results/generated_{timestamp}"
     processed_data_path = "./processed_data"
     skeleton_template_path = "./dataset/Aeroplane_BR.bvh"
     os.makedirs(output_bvh_dir, exist_ok=True)
+    print(f"Output directory: {output_bvh_dir}")
 
     # --- 모델 및 Diffusion 초기화 ---
     print("Initializing model...")
@@ -65,8 +69,6 @@ def generate():
         model, diffusion, dataset,
         num_samples=args.num_samples,
         seq_len=args.seq_len,
-        #input_feats=input_feats,
-        #root_motion_features=root_motion_features,
         template_path=skeleton_template_path,
         output_dir=output_bvh_dir,
         device=device
