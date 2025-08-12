@@ -47,8 +47,8 @@ def extract_vroot_transform(quat_rotation, offset):
     q_yaw = glm.angleAxis(yaw, glm.vec3(0,1,0))
     R_yaw = glm.mat4_cast(q_yaw)
 
-    #T_offset = glm.translate(glm.mat4(1.0),glm.vec3(offset.x,0,offset.z)) 잠시 루트 고정
-    T_offset = glm.mat4(1.0)
+    T_offset = glm.translate(glm.mat4(1.0),glm.vec3(offset.x,0,offset.z)) #잠시 루트 고정 해제
+    #T_offset = glm.mat4(1.0)
     virtual_root_T= T_offset @ R_yaw
     return virtual_root_T, q_yaw
 

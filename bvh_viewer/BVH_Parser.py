@@ -59,8 +59,8 @@ class Motion:
             root_local_pos = glm.vec3(t_local[3][0], t_local[3][1], t_local[3][2])
             root_local_rot = glm.quat_cast(t_local)
 
-            #frame.hip_local_offsets = root_local_pos 
-            frame.hip_local_offsets = glm.vec3(0, root_local_pos[1], 0) #잠시 루트 원점 고정
+            frame.hip_local_offsets = root_local_pos 
+            #frame.hip_local_offsets = glm.vec3(0, root_local_pos[1], 0) #잠시 루트 원점 고정
             frame.joint_rotations[root.name] = root_local_rot #hip의 rotation 값을 quaternion으로 저장
             frame.joint_local_transforms[root.name] = t_local
             #여기까지 hip에 대해서 재설정

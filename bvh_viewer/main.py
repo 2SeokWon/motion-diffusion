@@ -67,7 +67,7 @@ def main():
 
     clock = pygame.time.Clock()
     previous_time = pygame.time.get_ticks() / 1000.0
-    frame_duration = 1 / 30.0 #30fps 기준
+    frame_duration = 1 / 60.0 #60fps 기준
 
     running = True
     while running:
