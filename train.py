@@ -2,7 +2,7 @@
 import model
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 import numpy as np
 import os
 
@@ -40,7 +40,8 @@ def train():
     os.makedirs(save_dir, exist_ok=True)
 
     dataset = MotionDataset(processed_data_path=processed_data_path, seq_len=seq_len)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    sampler = WeightedRandomSampler(weights=dataset.sampler_weights, num_samples=len(dataset), replacement=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, num_workers=num_workers)
     print("Dataset loaded successfully.")
     
     print("Initializing model...")
