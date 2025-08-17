@@ -44,64 +44,78 @@ def generate_and_save_bvh(
     for i, line in enumerate(lines):
         if "MOTION" in line.upper(): header_end_index = i; break
     header_lines = lines[:header_end_index]
-    frame_time_line = f"Frame Time: {1.0/30.0:.8f}\n" # 30fps 기준
-    
+    frame_time_line = f"Frame Time: {1.0/60.0:.8f}\n" # 60fps 기준
+
     # --- 각 샘플을 BVH로 변환 ---
     for i in range(num_samples):
         print(f"Processing sample {i+1}/{num_samples}...")
         single_motion = generated_motion[i]
 
-        root_y_height = single_motion[:, 0]
-        root_xz_velocity = single_motion[:, 1:3]
-        root_y_angular_velocity = single_motion[:, 3] # Y축 각속도 추출!
-        all_joint_6d = single_motion[:, 4:].reshape(seq_len, -1, 6)
+        # --- [수정] 특징 분해: 이전 전처리와 일치 (angular_velocity 포함) ---
+        root_y_height = single_motion[:, 0]  # (seq_len,)
+        root_xz_velocity = single_motion[:, 1:3]  # (seq_len, 2)
+        root_y_angular_velocity = single_motion[:, 3]  # (seq_len,) Y축 각속도
+        # --- [주의] local_joint_positions_flat (66) 스킵: 4:70은 position, 70:는 rotation
+        all_joint_6d = single_motion[:, 70:].reshape(seq_len, -1, 6)  # (seq_len, num_joints, 6)
 
-        all_local_rotmats = sixd_to_rotation_matrix(torch.from_numpy(all_joint_6d))
-        # [w,x,y,z] 형식의 numpy 배열 반환
-        all_local_quat_wxyz = matrix_to_quaternion_scipy(all_local_rotmats).numpy().reshape(seq_len, -1, 4)
-        root_local_quats_wxyz = all_local_quat_wxyz[:, 0, :]
-        joint_local_quats_wxyz = all_local_quat_wxyz[:, 1:, :]
+        # --- [디버깅] shape 확인 (필요 시 제거) ---
+        num_joints = all_joint_6d.shape[1]
+        print(f"  all_joint_6d shape: {all_joint_6d.shape} (num_joints={num_joints})")
 
+        # --- 6D -> 회전 행렬 -> 쿼터니언 (w,x,y,z) ---
+        all_local_rotmats = sixd_to_rotation_matrix(torch.from_numpy(all_joint_6d).float())  # (seq_len, num_joints, 3, 3)
+        # matrix_to_quaternion_scipy: (seq_len, num_joints, 4) 반환 (w,x,y,z)
+        all_local_quat_wxyz = matrix_to_quaternion_scipy(all_local_rotmats).numpy()
+
+        root_local_quats_wxyz = all_local_quat_wxyz[:, 0, :]  # (seq_len, 4)
+        joint_local_quats_wxyz = all_local_quat_wxyz[:, 1:, :]  # (seq_len, num_joints-1, 4)
+
+        # --- 루트 위치와 글로벌 회전 적분 ---
         final_root_positions = np.zeros((seq_len, 3), dtype=np.float32)
-        final_root_global_quats_xyzw = np.zeros((seq_len, 4), dtype=np.float32)
+        final_root_global_quats_xyzw = np.zeros((seq_len, 4), dtype=np.float32)  # SciPy (x,y,z,w)
         
         final_root_positions[0, 1] = root_y_height[0]
-        current_facing_rot = Rotation.from_quat([0, 0, 0, 1]) # Scipy quat (x,y,z,w)
+        current_facing_rot = Rotation.from_quat([0, 0, 0, 1])  # 초기 (x,y,z,w)
 
         for frame_idx in range(seq_len):
-            # Y축 각속도를 이용해 현재 프레임의 facing rotation 업데이트
+            # --- Y축 각속도를 이용해 facing rotation 업데이트 (이전 프레임 기준) ---
             if frame_idx > 0:
-                ang_vel_rad = root_y_angular_velocity[frame_idx - 1]
+                ang_vel_rad = root_y_angular_velocity[frame_idx - 1]  # 이전 프레임 각속도
                 rot_change = Rotation.from_euler('y', ang_vel_rad, degrees=False)
                 current_facing_rot = current_facing_rot * rot_change
 
-            # 글로벌 회전 계산
-            # [w,x,y,z] -> [x,y,z,w]로 변환하여 Scipy에 전달
-            root_local_rot = Rotation.from_quat(root_local_quats_wxyz[frame_idx, [1, 2, 3, 0]])
+            # --- 글로벌 회전 계산: facing * local_root ---
+            # root_local_quats_wxyz (w,x,y,z) -> SciPy (x,y,z,w)로 변환
+            root_local_rot_xyzw = root_local_quats_wxyz[frame_idx, [1, 2, 3, 0]]  # (x,y,z,w)
+            root_local_rot = Rotation.from_quat(root_local_rot_xyzw)
             current_global_rot = current_facing_rot * root_local_rot
-            final_root_global_quats_xyzw[frame_idx] = current_global_rot.as_quat()
+            final_root_global_quats_xyzw[frame_idx] = current_global_rot.as_quat()  # (x,y,z,w)
 
-            # 다음 프레임 위치 계산
+            # --- 다음 프레임 위치 계산: local_vel -> world_vel 적용 ---
             if frame_idx < seq_len - 1:
                 local_vel_vec = np.array([root_xz_velocity[frame_idx, 0], 0, root_xz_velocity[frame_idx, 1]])
                 world_increment = current_facing_rot.apply(local_vel_vec)
                 final_root_positions[frame_idx + 1, [0, 2]] = final_root_positions[frame_idx, [0, 2]] + world_increment[[0, 2]]
                 final_root_positions[frame_idx + 1, 1] = root_y_height[frame_idx + 1]
 
-        # Scipy의 [x,y,z,w] quat -> Euler 변환
-        joint_local_quats_xyzw = joint_local_quats_wxyz[:, :, [1, 2, 3, 0]]
-        
+        # --- joint local quats: (w,x,y,z) -> (x,y,z,w)로 변환 ---
+        joint_local_quats_xyzw = joint_local_quats_wxyz[..., [1, 2, 3, 0]]  # (seq_len, num_joints-1, 4)
+
+        # --- 모든 회전 합치기: root_global + joint_local (SciPy (x,y,z,w)) ---
         all_bvh_rotations_quat_xyzw = np.concatenate([
-            final_root_global_quats_xyzw[:, np.newaxis, :],
-            joint_local_quats_xyzw
-        ], axis=1)
+            final_root_global_quats_xyzw[:, np.newaxis, :],  # (seq_len, 1, 4)
+            joint_local_quats_xyzw  # (seq_len, num_joints-1, 4)
+        ], axis=1)  # (seq_len, num_joints, 4)
         
+        # --- Euler 변환: 'yxz' 순서, degrees=True (BVH 호환) ---
         final_all_euler_deg = Rotation.from_quat(
             all_bvh_rotations_quat_xyzw.reshape(-1, 4)
         ).as_euler('yxz', degrees=True).reshape(seq_len, -1)
         
+        # --- BVH 데이터: root_positions + euler_deg ---
         motion_data_flat = np.concatenate([final_root_positions, final_all_euler_deg], axis=1)
         
+        # --- BVH 파일 저장 ---
         output_path = os.path.join(output_dir, f"generated_motion_{i+1}.bvh")
         with open(output_path, 'w') as f:
             f.writelines(header_lines)
@@ -109,6 +123,6 @@ def generate_and_save_bvh(
             f.write(f"Frames: {seq_len}\n")
             f.write(frame_time_line)
             motion_lines = [" ".join(f"{x:.6f}" for x in frame) for frame in motion_data_flat]
-            f.write("\n".join(motion_lines))
+            f.write("\n".join(motion_lines) + "\n")  # 마지막 줄에 \n 추가 (BVH 표준)
             
     print(f"\nAll {num_samples} motions saved to '{output_dir}' directory.")

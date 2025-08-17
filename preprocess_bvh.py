@@ -4,9 +4,10 @@ import torch
 from tqdm import tqdm
 import json
 from scipy.spatial.transform import Rotation
-
+import torch.nn.functional as F  # --- [추가] 이 줄만 넣어! ---
+import traceback
 # 필요한 유틸리티 및 클래스 import
-from kinematics import Skeleton, euler_to_sixd
+from kinematics import Skeleton, euler_to_sixd, get_virtual_root_transform, qrot
 
 # --- 1. 설정 (Configuration) ---
 bvh_folder_path = "./dataset/"
@@ -92,7 +93,7 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
         motion_data_euler = parse_bvh_motion_data(filepath)
         if motion_data_euler is None or motion_data_euler.shape[0] < 20: continue
             
-        motion_data_euler = motion_data_euler[::2, :]
+        #motion_data_euler = motion_data_euler[::2, :]
         num_frames = motion_data_euler.shape[0]
 
         # 1. 원본 BVH 데이터 로드
@@ -124,71 +125,83 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
         # 4. 정규화된 위치로부터 회전 정보 재추출 (Inverse Kinematics)
         rotations_quat_np = rotations_quat_np_orig
         
-        # 5. 정규화된 위치로부터 Facing Rotation 계산
-        facing_rotations_quat = np.zeros((num_frames, 4))
-        for i in range(num_frames):
-            across = (positions_3d_normalized[i, r_hip_idx] - positions_3d_normalized[i, l_hip_idx]) + (positions_3d_normalized[i, r_shoulder_idx] - positions_3d_normalized[i, l_shoulder_idx])
-            across[1] = 0
-            norm = np.linalg.norm(across)
-            if norm < 1e-6:
-                facing_rotations_quat[i] = facing_rotations_quat[i-1] if i > 0 else np.array([0, 0, 0, 1])
-            else:
-                forward = np.cross([0, 1, 0], across / norm)
-                yaw_angle_rad = np.arctan2(forward[0], forward[2])
-                facing_rot = Rotation.from_euler('y', yaw_angle_rad, degrees=False)
-                facing_rotations_quat[i] = facing_rot.as_quat()
+        # 원본 루트의 전역 회전을 Scipy 객체로 변환
+        root_global_rotations_obj = Rotation.from_quat(rotations_quat_np_orig[:, 0, :])
         
-        # 6. Global -> Local Root Orientation 계산
-        root_global_rotations = Rotation.from_quat(rotations_quat_np[:, 0, :])
-        facing_rotations = Rotation.from_quat(facing_rotations_quat)
-        root_local_rotations = facing_rotations.inv() * root_global_rotations #몸만 튼 방향
-        root_local_rotations_quat = root_local_rotations.as_quat()
-        
-        # 7. 모든 관절의 Local Orientation을 6D로 변환
-        joint_rotations_quat_np = rotations_quat_np[:, 1:, :]
+        # 새로 추가된 함수를 호출하여 로컬 루트 회전, 가상 루트 회전/위치를 한 번에 계산
+        root_local_quats, virtual_root_quats, virtual_root_positions = get_virtual_root_transform(
+            root_positions_np_orig, root_global_rotations_obj
+        )
+
+        # 7. 모든 관절의 Local Orientation을 6D로 변환 (기존과 유사)
+        joint_rotations_quat_np = rotations_quat_np_orig[:, 1:, :]
+        # 쿼터니언 순서가 (x,y,z,w)이므로 그대로 사용
         all_local_rotations_quat = np.concatenate(
-            [root_local_rotations_quat[:, np.newaxis, :], joint_rotations_quat_np], axis=1
+            [root_local_quats[:, np.newaxis, :], joint_rotations_quat_np], axis=1
         )
         all_local_rotations_rad = Rotation.from_quat(all_local_rotations_quat.reshape(-1, 4)).as_euler('yxz', degrees=False)
         all_local_rotations_6d = euler_to_sixd(torch.from_numpy(all_local_rotations_rad).float()).numpy().reshape(num_frames, -1)
         
-        # 8. 루트 속도 계산 (정규화된 위치 사용)
-        normalized_root_positions = positions_3d_normalized[:, 0, :]
-        root_velocity_global_normalized = normalized_root_positions[1:] - normalized_root_positions[:-1]
+        # ### [수정] 8단계: 루트 속도 계산 (가상 루트 정보 사용) ###
+        # 가상 루트의 전역 속도 계산
+        root_velocity_global = virtual_root_positions[1:] - virtual_root_positions[:-1]
         
-        inv_facing_rotations_prev = Rotation.from_quat(facing_rotations_quat[:-1]).inv()
-        root_velocity_local = inv_facing_rotations_prev.apply(root_velocity_global_normalized)
+        # 이전 프레임의 가상 루트 회전으로 변환하여 로컬 속도 계산
+        virtual_root_rots_prev_obj = Rotation.from_quat(virtual_root_quats[:-1])
+        root_velocity_local = virtual_root_rots_prev_obj.inv().apply(root_velocity_global)
         
-        facing_rotations_obj = Rotation.from_quat(facing_rotations_quat)
-        facing_rot_quat_diff = (facing_rotations_obj[1:] * facing_rotations_obj[:-1].inv()).as_quat()
-        root_angular_velocity_y = Rotation.from_quat(facing_rot_quat_diff).as_euler('yxz', degrees=False)[:, 0]
+        # 가상 루트의 각속도 계산
+        virtual_root_rots_obj = Rotation.from_quat(virtual_root_quats)
+        virtual_root_rot_diff = (virtual_root_rots_obj[1:] * virtual_root_rots_obj[:-1].inv())
+        root_angular_velocity_y = virtual_root_rot_diff.as_euler('yxz', degrees=False)[:, 0]
 
-        # 9. 최종 특징 벡터 조립 (정규화된 값 사용!)
-        root_y_height = normalized_root_positions[1:, [1]]
+        # 9. 최종 특징 벡터 조립
+        #    (local_joint_position을 사용하지 않는 원래 버전 기준)
+        root_y_height = positions_3d_orig[1:, 0, [1]] # 루트의 Y 높이는 원본 위치 사용
         root_xz_velocity = root_velocity_local[:, [0, 2]]
         root_y_angular_velocity = root_angular_velocity_y[:, np.newaxis]
-
-        joint_positions_normalized = positions_3d_normalized[1:, 1:, :].reshape(num_frames-1, -1)
-        #joint_velocities = positions_3d_normalized[1:] - positions_3d_normalized[:-1]
-        #joint_velocities_flat = joint_velocities.reshape(num_frames-1, -1)
-
         all_joint_6d_rotations = all_local_rotations_6d[1:, :]
-     
+
+        root_positions_subset = positions_3d_orig[1:, 0, :]
+        all_joint_positions_subset = positions_3d_orig[1:, :, :]
+        
+        # SciPy 대신 쿼터니언 배열로 변환 (w,x,y,z 순서로 맞춤)
+        virtual_root_quats_prev = torch.from_numpy(virtual_root_quats[:-1]).float()  # shape (M, 4), M = num_frames-1
+        
+        # 입력 벡터 준비: 월드 위치 - 루트 위치 (shape (M, num_joints, 3))
+        world_pos_diff = torch.from_numpy(all_joint_positions_subset - root_positions_subset[:, np.newaxis, :]).float()
+        
+        # 가상 루트의 inverse 쿼터니언 계산 (conjugate: w 그대로, xyz 부호 반전)
+        virtual_root_quats_prev_inv = virtual_root_quats_prev.clone()
+        virtual_root_quats_prev_inv[:, 1:] = -virtual_root_quats_prev_inv[:, 1:]
+        virtual_root_quats_prev_inv = F.normalize(virtual_root_quats_prev_inv, dim=-1)  # 안전하게 정규화
+        
+        # qrot로 회전 적용: qrot(inv_quat, v) (브로드캐스팅으로 한 번에)
+        # virtual_root_quats_prev_inv: (M, 4)
+        # world_pos_diff: (M, num_joints, 3)
+        # -> qrot는 마지막 차원이 맞아야 하니, unsqueeze 등으로 브로드캐스트
+        local_joint_positions = qrot(
+            virtual_root_quats_prev_inv.unsqueeze(1),  # (M, 1, 4)로 확장
+            world_pos_diff  # (M, num_joints, 3)
+        ).numpy()  # Torch -> NumPy로 변환
+        
+        # 루트(0번 관절)를 제외하고 1차원으로 펼침
+        local_joint_positions_flat = local_joint_positions[:, 1:, :].reshape(num_frames - 1, -1)
+
+        # 최종 특징 벡터에 local_joint_positions_flat를 추가
         final_features = np.concatenate([
-            root_y_height, #1
-            root_xz_velocity, #2
-            root_y_angular_velocity, #1
-            all_joint_6d_rotations # 23 * 6 = 138
-        ], axis=1)   
+            root_y_height,                 # 1
+            root_xz_velocity,              # 2
+            root_y_angular_velocity,       # 1
+            local_joint_positions_flat,    # 22 * 3 = 66
+            all_joint_6d_rotations,        # 23 * 6 = 138
+        ], axis=1)
         
         clip_filename = f"clip_{idx:04d}.npz"
         clip_filepath = os.path.join(output_processed_dir, clip_filename)
 
-        facing_rotations_to_save= facing_rotations_quat[1:]
-
         np.savez(clip_filepath, 
-                 features=final_features,
-                 facing_rotations=facing_rotations_to_save)
+                 features=final_features)
 
         all_motion_clips.append({
             "path": clip_filename,
@@ -197,6 +210,8 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
 
     except Exception as e:
         print(f"Could not process file {filename}. Error: {e}")
+        traceback.print_exc()  # --- [추가] 이게 상세 에러 스택을 출력해줌! ---
+
 
 # --- 3. 최종 데이터 취합 및 저장 ---
 print("Calculating mean and std for the entire dataset...")
@@ -212,11 +227,16 @@ full_dataset_np = np.concatenate(all_clips_for_stats, axis=0)
 print(f"Y Height Mean in full dataset: {full_dataset_np[:, 0].mean():.4f}")
 
 pos_vel_features = full_dataset_np[:, :4]  # Root position and velocity features
-rotation_features = full_dataset_np[:, 4:]  # Joint rotations
+position_features = full_dataset_np[:, 4:70]  # Joint positions
+rotation_features = full_dataset_np[:, 70:]  # Joint rotations
 
 pos_vel_mean = np.mean(pos_vel_features, axis=0, keepdims=True)
 pos_vel_std = np.std(pos_vel_features, axis=0, keepdims=True)
 pos_vel_std[pos_vel_std == 0] = 1e-7
+
+position_mean = np.mean(position_features, axis=0, keepdims=True)
+position_std = np.std(position_features, axis=0, keepdims=True)
+position_std[position_std == 0] = 1e-7
 
 rotation_mean = np.mean(rotation_features, axis=0, keepdims=True)
 rotation_std = np.std(rotation_features, axis=0, keepdims=True)
@@ -224,6 +244,8 @@ rotation_std[rotation_std == 0] = 1e-7
 
 np.save(os.path.join(output_processed_dir, "pos_vel_mean.npy"), pos_vel_mean)
 np.save(os.path.join(output_processed_dir, "pos_vel_std.npy"), pos_vel_std)
+np.save(os.path.join(output_processed_dir, "position_mean.npy"), position_mean)
+np.save(os.path.join(output_processed_dir, "position_std.npy"), position_std)
 np.save(os.path.join(output_processed_dir, "rotation_mean.npy"), rotation_mean)
 np.save(os.path.join(output_processed_dir, "rotation_std.npy"), rotation_std)
 

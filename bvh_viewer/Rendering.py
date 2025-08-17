@@ -2,7 +2,7 @@
 from OpenGL.GL import *
 from pyglm import glm
 import numpy as np
-from utils import draw_colored_cube, draw_colored_sphere, bone_rotation, draw_arrow, draw_undercircle
+from .utils import draw_colored_cube, draw_colored_sphere, bone_rotation, draw_arrow, draw_undercircle
 
 joint_size = 3
 

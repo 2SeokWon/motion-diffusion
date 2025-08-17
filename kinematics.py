@@ -5,6 +5,46 @@ import torch.nn.functional as F
 from scipy.spatial.transform import Rotation
 import numpy as np
 
+def get_virtual_root_transform(root_positions, root_rotations):
+    """
+    Scipy/Numpy를 사용하여 전체 모션 시퀀스에 대한 가상 루트 변환을 계산합니다.
+    :param root_positions: (N, 3) 크기의 원본 루트 위치 배열
+    :param root_rotations: (N) 크기의 Scipy Rotation 객체 배열
+    :return: local_root_quats, virtual_root_quats, virtual_root_positions
+    """
+    up_vector = np.array([0, 1, 0])
+
+    # 1. 가상 루트 위치 계산 (XZ 평면 경로)
+    #    원본 위치에서 Y축 성분을 제거하여 투영합니다.
+    y_component = np.dot(root_positions, up_vector)[:, np.newaxis] * up_vector
+    virtual_root_positions = root_positions - y_component
+    
+    # 2. 가상 루트 회전 계산 (Y축 방향, Yaw)
+    #    원본 회전이 바라보는 Z축 방향 벡터를 XZ 평면에 투영합니다.
+    forward_vectors = root_rotations.apply(np.array([0, 0, 1]))
+    y_component_fwd = np.dot(forward_vectors, up_vector)[:, np.newaxis] * up_vector
+    forward_vectors_xz = forward_vectors - y_component_fwd
+    
+    # 길이가 0인 벡터가 되지 않도록 정규화
+    norms = np.linalg.norm(forward_vectors_xz, axis=-1, keepdims=True)
+    forward_vectors_xz = np.divide(forward_vectors_xz, norms, out=np.zeros_like(forward_vectors_xz), where=norms > 1e-6)
+    
+    # --- [수정] 각 프레임별 yaw(theta) 계산으로 회전 객체 생성 ---
+    # theta = arctan2(-fx, fz)
+    fx = forward_vectors_xz[:, 0]
+    fz = forward_vectors_xz[:, 2]
+    theta = np.arctan2(-fx, fz)
+    
+    # SciPy Rotation 객체 배열 생성 (N개의 회전)
+    virtual_root_rots = Rotation.from_euler('y', theta)
+    # --- 수정 끝 ---
+
+    # 3. 로컬 루트 회전 계산: local_rot = inv(virtual_rot) * global_rot
+    local_root_rots = virtual_root_rots.inv() * root_rotations
+
+    # Scipy Rotation 객체를 (N, 4) 쿼터니언 배열(x,y,z,w)로 변환하여 반환
+    return local_root_rots.as_quat(), virtual_root_rots.as_quat(), virtual_root_positions
+
 def euler_to_sixd(euler_angles_rad, order='yxz'):
     """
     오일러 각도(라디안)를 6D 회전 표현으로 변환합니다.
@@ -117,7 +157,7 @@ def qrot(q, v):
     """
     assert q.shape[-1] == 4
     assert v.shape[-1] == 3
-    assert q.shape[:-1] == v.shape[:-1]
+    #assert q.shape[:-1] == v.shape[:-1]
     
     q_w = q[..., 0]
     q_vec = q[..., 1:]

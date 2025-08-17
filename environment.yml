@@ -42,3 +42,5 @@ dependencies:
       - pygame
       - pytorch-fid
       - safetensors
+      - imageio
+      - pyglm

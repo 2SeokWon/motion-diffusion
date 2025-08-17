@@ -7,13 +7,15 @@ import torch
 from torch.utils.data import Dataset
 
 class MotionDataset(Dataset):
-    def __init__(self, processed_data_path, seq_len=180, feat_bias=5.0):
+    def __init__(self, processed_data_path, seq_len=180, feat_bias=15.0):
         self.processed_data_path = processed_data_path
         self.seq_len = seq_len
 
         metadata_path = os.path.join(processed_data_path, "metadata.json")
         pos_vel_mean_path = os.path.join(processed_data_path, "pos_vel_mean.npy")
         pos_vel_std_path = os.path.join(processed_data_path, "pos_vel_std.npy")
+        position_mean_path = os.path.join(processed_data_path, "position_mean.npy")
+        position_std_path = os.path.join(processed_data_path, "position_std.npy")
         rotation_mean_path = os.path.join(processed_data_path, "rotation_mean.npy")
         rotation_std_path = os.path.join(processed_data_path, "rotation_std.npy")
 
@@ -22,16 +24,14 @@ class MotionDataset(Dataset):
             
         self.pos_vel_mean = np.load(pos_vel_mean_path)
         pos_vel_std = np.load(pos_vel_std_path)
-        pos_vel_std += 1e-8 # 0으로 나누는 것을 방지
-        pos_feat_bias = np.array([2.0, 2.0, 2.0, 8.0], dtype=np.float32)
-        pos_vel_std /= pos_feat_bias
+        pos_vel_std /= feat_bias
         self.pos_vel_std = pos_vel_std
 
+        self.position_mean = np.load(position_mean_path)
+        self.position_std = np.load(position_std_path)
+
         self.rotation_mean = np.load(rotation_mean_path)
-        rotation_std = np.load(rotation_std_path)
-        rotation_std += 1e-8
-        rotation_std /= feat_bias
-        self.rotation_std = rotation_std
+        self.rotation_std = np.load(rotation_std_path)
 
         # 2. 가중 샘플링을 위한 준비
         #    - 각 클립의 길이가 SEQ_LEN보다 짧으면 제외
@@ -70,10 +70,11 @@ class MotionDataset(Dataset):
                 
         # 3. SEQ_LEN 길이만큼 클립을 잘라냄
         motion_segment = clip_data[start_frame : start_frame + self.seq_len]
-
-        pos_vel_part = (motion_segment[:, :4] - self.pos_vel_mean) / self.pos_vel_std
-        rotation_part = (motion_segment[:, 4:] - self.rotation_mean) / self.rotation_std
-
+        
         # 4. 정규화 및 텐서로 변환
-        normalized_segment = np.concatenate([pos_vel_part, rotation_part], axis=1)
+        pos_vel_part = (motion_segment[:, :4] - self.pos_vel_mean) / self.pos_vel_std
+        position_part = (motion_segment[:, 4:70] - self.position_mean) / self.position_std
+        rotation_part = (motion_segment[:, 70:] - self.rotation_mean) / self.rotation_std
+
+        normalized_segment = np.concatenate([pos_vel_part, position_part, rotation_part], axis=1)
         return torch.from_numpy(normalized_segment).float()

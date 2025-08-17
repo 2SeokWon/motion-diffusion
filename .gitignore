@@ -1,5 +1,9 @@
 processed_data/
 checkpoints/
+checkpoints_no_vel/
+checkpoints_with_vel/
 results_no_vel/
 results_with_vel/
 results/
+Miniconda3-latest-Linux-x86_64.sh
+__pycache__

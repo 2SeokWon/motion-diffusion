@@ -2,7 +2,7 @@
 
 import numpy as np
 from pyglm import glm
-from Transforms import translation_matrix, extract_vroot_transform
+from .Transforms import translation_matrix, extract_vroot_transform
 
 def mat4_close(a, b, eps=1e-4):
     for i in range(3):

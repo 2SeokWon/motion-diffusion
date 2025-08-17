@@ -1,6 +1,6 @@
 import imgui
 from tkinter import filedialog
-from BVH_Parser import bvh_parser
+from .BVH_Parser import bvh_parser
 def draw_control_panel(state):
     """
     Animation의 재생/멈춤 그리고 slider 바를 표시하는 Control Panel입니다.

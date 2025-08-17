@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
+
 from tqdm.auto import tqdm
-from kinematics import features_to_xyz
 
 #1D 배열에서 특정 timesteps에 해당하는 값을 추출하여 텐서로 변환하고, 지정된 모양으로 확장하는 함수
 def _extract_into_tensor(arr, timesteps, broadcast_shape):
@@ -16,14 +16,13 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
 class GaussianDiffusion(nn.Module):
     def __init__(self, betas):
         super().__init__()
-
         #beta to alpha 설정
         self.betas = betas #β_t (1000, ) 구조로 [0.0001 , ... , 0.02]
         self.num_timesteps = int(self.betas.shape[0])
 
-        alphas = 1.0 - self.betas #α_t = 1 - β_t 로 (1000 ,)
-        self.alphas_cumprod = np.cumprod(alphas, axis=0) #α_t 누적곱, α_tilde (1000, )
-        self.alphas_cumprod_prev = np.append(1.0, self.alphas_cumprod[:-1]) #α_t-1 누적곱, α_tilde_prev (1000, ) #α_tilde_prev = [1.0, α_0, α_1, ..., α_998]
+        alphas = 1.0 - self.betas 
+        self.alphas_cumprod = np.cumprod(alphas, axis=0) 
+        self.alphas_cumprod_prev = np.append(1.0, self.alphas_cumprod[:-1]) 
 
         #q_sample을 위한 alpha 계산
         self.sqrt_alphas_cumprod = np.sqrt(self.alphas_cumprod) #Training의 loss 함수에서 사용할  root(α_tilde), 해당 단계까지 가기 위한 노이즈 총량?
@@ -65,15 +64,15 @@ class GaussianDiffusion(nn.Module):
         model_output = model(x_t, t) #이걸 노이즈로 나오게 했음 x_t에서 x_0으로 가는 노이즈?
 
         target = noise
-        
+    
         loss_simple = F.mse_loss(model_output, target)
+        
+        #pred_x_start = self._predict_xstart_from_eps(x_t, t, model_output)
+        #target_velocity = x_start[:, 1:] - x_start[:, :-1] #x_start의 속도, (batch_size, seq_len-1, input_feats)
+        #pred_velocity = pred_x_start[:, 1:] - pred_x_start[:, :-1]
+        #loss_vel = F.mse_loss(pred_velocity, target_velocity)
 
-        pred_x_start = self._predict_xstart_from_eps(x_t, t, model_output)
-        target_velocity = x_start[:, 1:] - x_start[:, :-1] #x_start의 속도, (batch_size, seq_len-1, input_feats)
-        pred_velocity = pred_x_start[:, 1:] - pred_x_start[:, :-1]
-        loss_vel = F.mse_loss(pred_velocity, target_velocity)
-
-        lambda_vel = 0.3 #속도에 대한 가중치
+        #lambda_vel = 0.3 #속도에 대한 가중치
         
         #lambda_fk = 0.0 #가중치 변경 가능 당장은 사용 X
         #loss_fk = torch.tensor(0.0, device=x_start.device)
@@ -85,13 +84,13 @@ class GaussianDiffusion(nn.Module):
 
         #    loss_fk = F.mse_loss(pred_xyz, target_xyz)
         
-        final_loss = loss_simple + lambda_vel * loss_vel
+        #final_loss = loss_simple + lambda_vel * loss_vel
         
         final_loss = loss_simple #현재는 FK loss를 사용하지 않음
         return {
             'loss': final_loss, 
             'loss_simple': loss_simple.item(),
-            'loss_vel': loss_vel.item()
+            #'loss_vel': loss_vel.item()
         }
 
     def p_mean_variance(self, model, x_t, t): #모델을 통해 노이즈 예측하고 예측값으로부터 x_0을 구하고, x_{t-1}의 평균과 분산을 계산
