@@ -120,7 +120,7 @@ def main():
     os.makedirs(output_bvh_dir, exist_ok=True)
 
     print("--- Verifying Preprocessing Pipeline (Norm/De-norm -> BVH) ---")
-    clip_filename = "clip_0000.npz"
+    clip_filename = "clip_0047.npz"
     clip_path = os.path.join(processed_data_path, clip_filename)
 
     if not os.path.exists(clip_path):

@@ -1,13 +1,14 @@
 import os
 import numpy as np
 import torch
+import math
 from tqdm import tqdm
 import json
 from scipy.spatial.transform import Rotation
 import torch.nn.functional as F  # --- [추가] 이 줄만 넣어! ---
 import traceback
 # 필요한 유틸리티 및 클래스 import
-from kinematics import Skeleton, euler_to_sixd, get_virtual_root_transform, qrot
+from kinematics import Skeleton, euler_to_sixd, get_virtual_root_transform, qrot, quat_to_rotmat
 
 # --- 1. 설정 (Configuration) ---
 bvh_folder_path = "./dataset/"
@@ -136,11 +137,29 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
         # 7. 모든 관절의 Local Orientation을 6D로 변환 (기존과 유사)
         joint_rotations_quat_np = rotations_quat_np_orig[:, 1:, :]
         # 쿼터니언 순서가 (x,y,z,w)이므로 그대로 사용
-        all_local_rotations_quat = np.concatenate(
+        all_local_rotations_quat_np = np.concatenate(
             [root_local_quats[:, np.newaxis, :], joint_rotations_quat_np], axis=1
         )
-        all_local_rotations_rad = Rotation.from_quat(all_local_rotations_quat.reshape(-1, 4)).as_euler('yxz', degrees=False)
-        all_local_rotations_6d = euler_to_sixd(torch.from_numpy(all_local_rotations_rad).float()).numpy().reshape(num_frames, -1)
+        all_local_rotations_quat = torch.from_numpy(all_local_rotations_quat_np).float()  # (num_frames, num_joints, 4)
+        all_local_rotations_quat = torch.cat([all_local_rotations_quat[..., 3:], all_local_rotations_quat[..., :3]], dim=-1)
+
+        # quat -> Rotation Matrix (kinematics.py의 quat_to_rotmat 사용!)
+        all_rot_matrices = quat_to_rotmat(all_local_rotations_quat.view(-1, 4))  # (num_frames*num_joints, 3, 3)
+        all_rot_matrices = all_rot_matrices.view(num_frames, -1, 3, 3)  # (num_frames, num_joints, 3, 3)
+
+        # Rotation Matrix -> 6D (첫 두 열)
+        x_vec = all_rot_matrices[..., :, 0]  # (num_frames, num_joints, 3)
+        y_vec = all_rot_matrices[..., :, 1]  # (num_frames, num_joints, 3)
+
+        # Orthogonalization (추천: stability 높임, features_to_xyz의 sixd_to_rotation_matrix와 유사)
+        x_vec = F.normalize(x_vec, dim=-1)
+        y_vec = y_vec - (x_vec * (x_vec * y_vec).sum(dim=-1, keepdim=True))  # Gram-Schmidt projection
+        y_vec = F.normalize(y_vec, dim=-1)
+
+        all_local_rotations_6d = torch.cat([x_vec, y_vec], dim=-1).reshape(num_frames, -1).numpy()  # (num_frames, num_joints*6), NumPy
+
+        #all_local_rotations_rad = Rotation.from_quat(all_local_rotations_quat.reshape(-1, 4)).as_euler('yxz', degrees=False)
+        #all_local_rotations_6d = euler_to_sixd(torch.from_numpy(all_local_rotations_rad).float()).numpy().reshape(num_frames, -1)
         
         # ### [수정] 8단계: 루트 속도 계산 (가상 루트 정보 사용) ###
         # 가상 루트의 전역 속도 계산
@@ -152,8 +171,51 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
         
         # 가상 루트의 각속도 계산
         virtual_root_rots_obj = Rotation.from_quat(virtual_root_quats)
-        virtual_root_rot_diff = (virtual_root_rots_obj[1:] * virtual_root_rots_obj[:-1].inv())
-        root_angular_velocity_y = virtual_root_rot_diff.as_euler('yxz', degrees=False)[:, 0]
+        root_angular_velocity_y = np.zeros(num_frames - 1)  # 결과 배열
+        prev_yaw = None
+
+        #debug_frame_start = 0  # flip 시작 프레임 (당신이 아는 값으로 변경)
+        #debug_frame_end = num_frames    # flip 끝 프레임
+
+        for i in range(num_frames):
+            # i=0은 스킵 (velocity는 1부터)
+            if i == 0:
+                continue
+            
+            # 현재 프레임의 rotation matrix 구하기
+            current_rot_matrix = virtual_root_rots_obj[i].as_matrix()  # (3,3) matrix
+            
+            # Yaw 계산 (atan2로 -pi to pi)
+            current_yaw = math.atan2(current_rot_matrix[0, 2], current_rot_matrix[2, 2])  # 당신의 제안 그대로
+            
+            # Angular velocity 계산
+            if prev_yaw is None:
+                angular_velocity = 0.0
+            else:
+                angular_velocity = current_yaw - prev_yaw
+                if angular_velocity > math.pi:
+                    angular_velocity -= 2 * math.pi
+                if angular_velocity < -math.pi:
+                    angular_velocity += 2 * math.pi
+            
+            # 결과 저장 (i-1 인덱스에)
+            root_angular_velocity_y[i-1] = angular_velocity
+            
+            # 이전 yaw 업데이트
+            prev_yaw = current_yaw
+            # --- [테스트용 print] 전체 velocity 배열 출력 (한 번만) ---
+            #if i == num_frames - 1:  # 마지막 프레임에서 전체 출력
+            #    print(f"Root Angular Velocity Y (전체): {root_angular_velocity_y}")
+                # 큰 jump 확인: ±π 근처 값 세기
+            #   large_jumps = np.abs(root_angular_velocity_y) > (math.pi * 0.9)  # ±π * 0.9 이상을 jump로 간주
+            #   print(f"큰 jump 개수 (±π 근처): {np.sum(large_jumps)} / {len(root_angular_velocity_y)}")
+            
+            # --- [테스트용 print] flip 프레임 주변에서 이전/현재 yaw 출력 ---
+            #if debug_frame_start <= i <= debug_frame_end:
+            #    print(f"Frame {i}: Prev Yaw = {prev_yaw:.4f}, Current Yaw = {current_yaw:.4f}, Velocity = {angular_velocity:.4f}")
+
+        #virtual_root_rot_diff = (virtual_root_rots_obj[1:] * virtual_root_rots_obj[:-1].inv())
+        #root_angular_velocity_y = virtual_root_rot_diff.as_euler('yxz', degrees=False)[:, 0]
 
         # 9. 최종 특징 벡터 조립
         #    (local_joint_position을 사용하지 않는 원래 버전 기준)

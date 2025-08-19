@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 """
-x_0을 예측할 때 사용할 수 있는 고정적인 Positional Encoding
+#x_0을 예측할 때 사용할 수 있는 고정적인 Positional Encoding
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):
         super(PositionalEncoding, self).__init__()
@@ -73,7 +73,7 @@ class PositionalEncoding(nn.Module):
         x = x + pos_embed
 
         return self.dropout(x)
-    
+
 def timestep_embedding(t, dim, max_period=10000):
     """
     시간(t) 정보를 sin/cos 함수를 이용해 벡터로 변환합니다.
@@ -81,9 +81,7 @@ def timestep_embedding(t, dim, max_period=10000):
     dim: 임베딩 벡터의 차원 (latent_dim)
     """
     half = dim // 2
-    freqs = torch.exp(
-        -np.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
-    ).to(device=t.device)
+    freqs = torch.exp(-np.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half).to(device=t.device)
     args = t[:, None].float() * freqs[None]
     embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
     if dim % 2:

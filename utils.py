@@ -3,7 +3,7 @@
 import torch
 import numpy as np
 import os
-from scipy.spatial.transform import Rotation, Slerp
+from scipy.spatial.transform import Rotation
 from kinematics import sixd_to_rotation_matrix, matrix_to_quaternion_scipy
 
 def generate_and_save_bvh(
