@@ -19,7 +19,7 @@ conda activate pyopengl
 BVH 파일들을 모델 학습에 적합한 형태로 전처리합니다:
 
 ```bash
-python preprocess_bvh.py
+python new_preprocess.py
 ```
 
 이 단계에서는:
@@ -81,7 +81,7 @@ python generate.py --checkpoint_path checkpoints/model_epoch_250.pt --num_sample
 python generate.py --checkpoint_path checkpoints/model_epoch_500.pt --num_samples 3 --seq_len 120
 ```
 
-생성된 BVH 파일들은 `results/` 폴더에 저장됩니다.
+생성된 BVH 파일들은 `results/` 폴더에 영상으로 저장됩니다.
 
 ## � 프로젝트 구조
 
@@ -93,7 +93,7 @@ motion_transformer/
 ├── results/                  # 생성된 BVH 파일들
 ├── bvh_viewer/              # BVH 파일 시각화 도구
 ├── environment.yml          # Conda 환경 설정
-├── preprocess_bvh.py       # 데이터 전처리 스크립트
+├── new_preprocess.py       # 데이터 전처리 스크립트
 ├── train.py                # 모델 학습 스크립트
 ├── generate.py             # 동작 생성 스크립트
 ├── model.py                # 트랜스포머 모델 정의
@@ -115,28 +115,13 @@ motion_transformer/
 프로젝트는 다음과 같은 동작 카테고리의 BVH 파일을 포함합니다:
 - Aeroplane (비행기 동작)
 - Angry (화난 동작)
-- Chicken (치킨 댄스)
+- Chicken (닭 동작)
 - Drunk (취한 동작)
 - InTheDark (어둠 속 동작)
 - KarateChop (가라테 동작)
+- Cat (고양이 동작)
 
 각 카테고리는 다양한 방향과 스타일 변형을 포함합니다.
-
-## 🎯 BVH 파일 시각화
-
-생성된 BVH 파일을 확인하려면 `bvh_viewer/` 폴더의 시각화 도구를 사용할 수 있습니다:
-
-```bash
-cd bvh_viewer
-python main.py [BVH_FILE_PATH]
-```
-
-예시:
-```bash
-cd bvh_viewer
-python main.py ../results/generated_sample_001.bvh
-python main.py ../dataset/Aeroplane_BR.bvh
-```
 
 ## ⚠️ 주의사항
 
