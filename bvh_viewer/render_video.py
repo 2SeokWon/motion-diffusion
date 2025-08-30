@@ -7,8 +7,6 @@ import imageio
 from pyglm import glm
 from tqdm import tqdm
 
-# --- Pygame 및 OpenGL 설정 ---
-# Pygame 초기화 시 지원 프롬프트가 뜨지 않도록 설정
 os.environ['PYGAME_HIDE_SUPPORT_MPT'] = "1"
 import pygame
 from OpenGL.GL import *
@@ -18,7 +16,7 @@ from OpenGL.GLU import *
 # 이 스크립트를 프로젝트 최상위 폴더에서 실행하거나,
 # bvh_tools 폴더 등이 있는 경로를 sys.path에 추가해야 할 수 있습니다.
 # 예: sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from .BVH_Parser import bvh_parser, Motion, MotionFrame, Joint
+from .BVH_Parser import bvh_parser, Motion, MotionFrame, Joint, get_preorder_joint_list
 from .Rendering import draw_humanoid
 from kinematics import sixd_to_rotation_matrix, matrix_to_quaternion_scipy
 from .Transforms import translation_matrix
@@ -28,59 +26,75 @@ from .utils import draw_axes, set_lights
 WINDOW_WIDTH, WINDOW_HEIGHT = 1280, 720
 FPS = 60
 # ----------------------------------------
+prev_r_inv = glm.quat(1, 0, 0, 0)
 
-def tensor_to_motion_object(generated_tensor: np.ndarray, template_bvh_path: str) -> (Joint, Motion):
+def tensor_to_motion_object(generated_tensor: np.ndarray, template_bvh_path: str, FPS=60) -> (Joint, Motion):
     """
     모델이 생성하고 역정규화한 특징 텐서를 bvh_parser의 Motion 객체로 변환합니다.
     """
     print("Converting tensor to Motion object...")
     
     root, motion_template = bvh_parser(template_bvh_path)
-    joint_order = [j for j in motion_template.quaternion_frame[0].joint_rotations.keys() if j != 'virtual_root']
-    
+    # quaternion_frame이 비어있을 수 있으므로, bvh_parser가 생성한 joint 계층구조에서 순서를 가져옵니다.
+    joint_order = [j.name for j in get_preorder_joint_list(root) if "Site" not in j.name]
+
+    num_joints = len(joint_order)  # <<<< 추가: 동적 계산
+    sixd_dim = num_joints * 6
+    pos_dim = (num_joints - 1) * 3  # local pos dim (root 제외)
+    sixd_start = 4 + pos_dim
+
     num_frames = generated_tensor.shape[0]
     motion_obj = Motion(frames=[], frame_time=1.0/FPS, frame_len=num_frames)
 
-    current_global_pos = np.array([0.0, 0.0, 0.0], dtype=np.float32)
-    current_yaw_angle_rad = 0.0
+    # --- 계산을 위해 GLM 타입으로 변수 초기화 ---
+    current_global_pos_glm = glm.vec3(0.0, 0.0, 0.0)
+    current_vr_rot_glm = glm.quat(1.0, 0.0, 0.0, 0.0)
+    
+    global prev_r_inv
 
     for i in tqdm(range(num_frames), desc="Reconstructing Motion"):
         frame_features = generated_tensor[i]
         
+        # 특징 분해 (차원은 N=23 기준)
         root_y_height = frame_features[0]
-        root_xz_velocity = frame_features[1:3]
+        root_xz_velocity_local = frame_features[1:3]
         root_y_angular_velocity = frame_features[3]
-        all_joint_6d = frame_features[70:].reshape(-1, 6)
+        all_joint_6d = frame_features[sixd_start:sixd_start + sixd_dim].reshape(-1, 6)
 
-        yaw_rot_mat = glm.rotate(glm.mat4(1.0), current_yaw_angle_rad, glm.vec3(0, 1, 0))
-        velocity_vec = glm.vec4(root_xz_velocity[0], 0, root_xz_velocity[1], 0)
-        world_increment = yaw_rot_mat * velocity_vec
-        
-        current_global_pos[0] += world_increment.x
-        current_global_pos[2] += world_increment.z
-        current_global_pos[1] = root_y_height
-
-        current_yaw_angle_rad += root_y_angular_velocity
-        
-        vr_translation = glm.translate(glm.mat4(1.0), glm.vec3(current_global_pos))
-        vr_rotation = glm.rotate(glm.mat4(1.0), current_yaw_angle_rad, glm.vec3(0, 1, 0))
-        virtual_transform = vr_translation * vr_rotation
-
+        # 1. 6D를 쿼터니언으로 미리 변환
         all_joint_rotmats_torch = sixd_to_rotation_matrix(torch.from_numpy(all_joint_6d))
-        all_joint_quats_glm = [glm.quat_cast(glm.mat3(rot.numpy())) for rot in all_joint_rotmats_torch]
-        
+        all_joint_quats_glm = [glm.quat_cast(glm.mat3(rot.numpy())) for rot in all_joint_rotmats_torch]       
+        root_local_rot_glm = all_joint_quats_glm[0]
+
+        rot_change = glm.angleAxis(root_y_angular_velocity, glm.vec3(0, 1, 0))
+        current_vr_rot_glm = current_vr_rot_glm * rot_change
+        current_vr_rot_glm = glm.normalize(current_vr_rot_glm)
+
+        current_hip_global_rot_glm = current_vr_rot_glm @ root_local_rot_glm
+
+        velocity_vec_local = glm.vec3(root_xz_velocity_local[0], 0, root_xz_velocity_local[1])
+        world_increment = current_vr_rot_glm * velocity_vec_local
+
+        current_global_pos_glm += glm.vec3(world_increment) #virtual root의 위치
+        current_global_pos_glm.y = 0.0
+    
         motion_frame = MotionFrame()
-        motion_frame.virtual_transform = virtual_transform
         
-        # Hip의 local offset과 rotation을 계산 (가상 루트 기준)
-        t_hip_global = translation_matrix(glm.vec3(current_global_pos)) @ glm.mat4_cast(all_joint_quats_glm[0])
-        t_local_hip = glm.inverse(virtual_transform) @ t_hip_global
-        motion_frame.hip_local_offsets = glm.vec3(t_local_hip[3])
-        motion_frame.joint_rotations[root.name] = glm.quat_cast(t_local_hip)
+        vr_translation = glm.translate(glm.mat4(1.0), current_global_pos_glm)
+        vr_rotation = glm.mat4_cast(current_vr_rot_glm)
+        motion_frame.virtual_transform = vr_translation @ vr_rotation
         
+        t_hip_global = glm.translate(glm.mat4(1.0), current_global_pos_glm) @ glm.mat4_cast(current_hip_global_rot_glm)
+        t_local_hip = glm.inverse(motion_frame.virtual_transform) @ t_hip_global
+        motion_frame.hip_local_position = glm.vec3(t_local_hip[3])
+        motion_frame.hip_local_position.y = root_y_height
+        t_local_hip[3][1] = root_y_height
+        motion_frame.joint_rotations[root.name] = root_local_rot_glm
+        
+        # 나머지 관절들의 지역 회전 저장
         for idx, joint_name in enumerate(joint_order):
-            if idx > 0: # Hip을 제외한 나머지 관절
-                 motion_frame.joint_rotations[joint_name] = all_joint_quats_glm[idx]
+            if idx > 0:
+                motion_frame.joint_rotations[joint_name] = all_joint_quats_glm[idx]
 
         motion_obj.quaternion_frame.append(motion_frame)
 

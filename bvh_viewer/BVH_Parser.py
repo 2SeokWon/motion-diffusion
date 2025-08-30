@@ -2,7 +2,7 @@
 
 import numpy as np
 from pyglm import glm
-from .Transforms import translation_matrix, extract_vroot_transform
+from .Transforms import translation_matrix, extract_vroot_transform, get_pelvis_virtual_safe
 
 def mat4_close(a, b, eps=1e-4):
     for i in range(3):
@@ -16,11 +16,11 @@ class Joint:
     """
     관절을 정의하는 Joint Class
     """
-    def __init__(self, name):
+    def __init__(self, name, offset=None, channels=None):
         self.name = name
-        self.channels = []
+        self.channels = channels or []  # 기본 []
         self.children = []
-        self.offset = [0, 0, 0]
+        self.offset = offset or [0, 0, 0]  # 기본 [0,0,0]
         self.kinematics = glm.mat4(1.0)
         self.parent = None
 
@@ -29,7 +29,8 @@ class Motion:
         self.frames = frames #모든 frame이 list로 들어가있음.[[],[],...,[]]
         self.frame_time = frame_time
         self.frame_len = frame_len
-        self.quaternion_frame = []
+        self.quaternion_frame = [] #MotionFrame 객체들(각 Frame에 대한 Joint 정보)
+        self.root = None
 
     def __len__(self):
         return len(self.frames)
@@ -43,8 +44,8 @@ class Motion:
         self.quaternion_frame = []
         for frame in self.frames:
             motion_frame = MotionFrame()
-            process_joint(root, frame, motion_frame, 0)
-            self.quaternion_frame.append(motion_frame)
+            process_joint(root, frame, motion_frame, 0) #각 motion_frame의 joint_rotation엔 Quaternion Rotation. 
+            self.quaternion_frame.append(motion_frame) #결국 모든 Frame의 joint_rotation을 가진 motion_frame이 저장
 
     def save_virtual_root_info(self, root):
         for frame in self.quaternion_frame:
@@ -59,19 +60,18 @@ class Motion:
             root_local_pos = glm.vec3(t_local[3][0], t_local[3][1], t_local[3][2])
             root_local_rot = glm.quat_cast(t_local)
 
-            frame.hip_local_offsets = root_local_pos 
-            #frame.hip_local_offsets = glm.vec3(0, root_local_pos[1], 0) #잠시 루트 원점 고정
+            frame.hip_local_position = root_local_pos 
             frame.joint_rotations[root.name] = root_local_rot #hip의 rotation 값을 quaternion으로 저장
             frame.joint_local_transforms[root.name] = t_local
             #여기까지 hip에 대해서 재설정
 
             vr_pos = glm.vec3(vr_transform[3][0], vr_transform[3][1], vr_transform[3][2])
+            #print(f"Frame: vr_pos = {vr_pos.x}, {vr_pos.y}, {vr_pos.z}")
 
-            frame.joint_positions["virtual_root"] = vr_pos #이건 global position이지 않겠는가?
+            frame.joint_positions["virtual_root"] = vr_pos #이건 virtual root의 global position이지 않겠는가?
             frame.joint_rotations["virtual_root"] = vr_rot
             frame.virtual_transform = vr_transform
 
-            # self.compute_forward_kinematics(virtual_root, glm.mat4(1.0), frame)
             self.compute_forward_kinematics(root, vr_transform, frame)
 
     def compute_forward_kinematics(self, joint, parent_transform, motion_frame):
@@ -89,7 +89,7 @@ class Motion:
 
         # 2. joint의 local 위치 (default: offset)
         if joint.parent is None:
-            T = glm.translate(glm.mat4(1.0), motion_frame.hip_local_offsets)  # virtual root은 global position을 갖고 있겠다.
+            T = glm.translate(glm.mat4(1.0), motion_frame.hip_local_position)  # virtual root은 global position을 갖고 있겠다.
                                                                                         # hip은 수정을 했으니 local 값을 가지고 있어야 한다.
         else:
             T = glm.translate(glm.mat4(1.0), glm.vec3(joint.offset))  # 그 외 joint는 이미 local offset을 가지고 있으니 괜찮다.
@@ -115,9 +115,9 @@ class MotionFrame:
     def __init__(self):
         self.joint_positions = {} #vec3으로 넣자. 당장 root만 position을 가짐
         self.joint_rotations = {} #Quaternion으로 들어가야함.
-        self.hip_local_offsets = None
+        self.hip_local_position = None
         self.joint_global_transforms = {}
-        self.joint_local_transforms = {} #모든 관절의 local transform, T_local을 저장
+        self.joint_local_transforms = {} #모든 관절의 local transform matrix, T_local을 저장
         self.virtual_transform = None #virtual root transform
 
 
@@ -171,13 +171,13 @@ def bvh_parser(file_path):
                         frame_len = int(parts[1])
                         continue
                     elif parts[0] == "Frame":
-                        print(parts[2])
                         frame_time = float(parts[2])
                         continue
                     frame_data = list(map(float, parts))
                     motion_frames.append(frame_data)
 
         motion_obj = Motion(motion_frames, frame_time, frame_len)
+        motion_obj.root = root
         motion_obj.list_to_quaternion(root)
         motion_obj.save_virtual_root_info(root)
 
@@ -269,6 +269,17 @@ def process_joint(joint, frame, motion_frame, channel_idx):
 
     return channel_idx
 
+def get_preorder_joint_list(root_joint):
+    joint_list = []
+
+    def traverse(joint):
+        joint_list.append(joint)
+        for child in joint.children:
+            if child.name != "Site":
+                traverse(child)
+
+    traverse(root_joint)
+    return joint_list
 
 def motion_connect(motion1, motion2, root, transition_frames=60):
     m1_len = len(motion1.quaternion_frame)
@@ -294,7 +305,7 @@ def motion_connect(motion1, motion2, root, transition_frames=60):
 
         new_frame.joint_positions["virtual_root"] = (rot_offset * frame.joint_positions["virtual_root"]) + pos_offset
         new_frame.joint_rotations["virtual_root"] = rot_offset * frame.joint_rotations["virtual_root"]
-        new_frame.hip_local_offsets = frame.hip_local_offsets
+        new_frame.hip_local_position = frame.hip_local_position
         new_frame.joint_global_transforms = frame.joint_global_transforms
         new_frame.joint_local_transforms = frame.joint_local_transforms
         new_frame.virtual_transform = frame.virtual_transform
@@ -315,7 +326,7 @@ def motion_connect(motion1, motion2, root, transition_frames=60):
 
         blended_frame.joint_positions["virtual_root"] = glm.mix(frame1.joint_positions["virtual_root"],frame2.joint_positions["virtual_root"], alpha)
         blended_frame.joint_rotations["virtual_root"] = glm.slerp(frame1.joint_rotations["virtual_root"],frame2.joint_rotations["virtual_root"], alpha)
-        blended_frame.hip_local_offsets = glm.mix(frame1.hip_local_offsets, frame2.hip_local_offsets, alpha)
+        blended_frame.hip_local_position = glm.mix(frame1.hip_local_position, frame2.hip_local_position, alpha)
         for name, rot1 in frame1.joint_rotations.items():
             if name == "virtual_root": continue
             rot2 = frame2.joint_rotations.get(name)

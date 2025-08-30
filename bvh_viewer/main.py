@@ -9,7 +9,7 @@ from imgui.integrations.pygame import PygameRenderer
 from pyglm import glm
 #import numpy as np
 
-from BVH_Parser import bvh_parser, check_bvh_structure, motion_connect
+from bvh_viewer.BVH_Parser import bvh_parser, check_bvh_structure, motion_connect
 from Rendering import draw_humanoid, draw_virtual_root_axis
 from utils import draw_axes, set_lights, random_color
 import Events
