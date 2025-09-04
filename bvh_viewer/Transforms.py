@@ -44,7 +44,7 @@ def lookrotation(v: glm.vec3, u: glm.vec3) -> glm.quat:
         rot_q = -rot_q
     return rot_q
 
-def get_pelvis_virtual_safe(ap: glm.vec3, ar: glm.quat, fallback_forward=glm.vec3(0, 0, 1), smooth_ratio=0.2, prev_r_inv_ref=None):
+def get_pelvis_virtual_safe(ap: glm.vec3, ar: glm.quat, fallback_forward=glm.vec3(0, 0, 1), smooth_ratio=0.0, prev_r_inv_ref=None):
     up = glm.vec3(0, 1, 0)
     p = ap - glm.dot(ap, up) / glm.dot(up, up) * up
     f = ar * glm.vec3(0, 0, 1)
@@ -65,7 +65,7 @@ def get_pelvis_virtual_safe(ap: glm.vec3, ar: glm.quat, fallback_forward=glm.vec
 
     return new_ap, new_ar
 
-def extract_vroot_transform(quat_rotation, position, smooth_ratio=0.2):
+def extract_vroot_transform(quat_rotation, position, smooth_ratio=0.0):
     """
     회전행렬에서 yaw값만을 추출하여, offset을 적용한 4x4 행렬을 반환합니다.
     glm 기반으로 스무딩 적용 (기존 함수 강화).

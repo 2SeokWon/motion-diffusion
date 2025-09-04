@@ -66,12 +66,12 @@ def tensor_to_motion_object(generated_tensor: np.ndarray, template_bvh_path: str
         all_joint_quats_glm = [glm.quat_cast(glm.mat3(rot.numpy())) for rot in all_joint_rotmats_torch]       
         root_local_rot_glm = all_joint_quats_glm[0]
 
+        # Virtual Root의 회전 처리
         rot_change = glm.angleAxis(root_y_angular_velocity, glm.vec3(0, 1, 0))
-        current_vr_rot_glm = current_vr_rot_glm * rot_change
+        current_vr_rot_glm = current_vr_rot_glm @ rot_change
         current_vr_rot_glm = glm.normalize(current_vr_rot_glm)
 
         current_hip_global_rot_glm = current_vr_rot_glm @ root_local_rot_glm
-
         velocity_vec_local = glm.vec3(root_xz_velocity_local[0], 0, root_xz_velocity_local[1])
         world_increment = current_vr_rot_glm * velocity_vec_local
 

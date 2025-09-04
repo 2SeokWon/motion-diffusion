@@ -86,7 +86,6 @@ class Motion:
         # 1. 현재 joint의 회전
         joint_rot = motion_frame.joint_rotations.get(joint.name, glm.quat(1, 0, 0, 0))
         R = glm.mat4_cast(joint_rot)
-
         # 2. joint의 local 위치 (default: offset)
         if joint.parent is None:
             T = glm.translate(glm.mat4(1.0), motion_frame.hip_local_position)  # virtual root은 global position을 갖고 있겠다.
