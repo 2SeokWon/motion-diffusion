@@ -83,11 +83,7 @@ def extract_features(motion, start_frame, clip_length):
         prev_global_pos_xz = vr_pos_xz
         global_pos_xz.append(vr_pos_xz)
 
-        # 6D / position
-        root_p_global = np.array(frame.joint_positions[motion.root.name])
-        root_R_global = np.array(frame.joint_global_transforms[motion.root.name])[:3, :3]
-        root_R_global_inv = np.linalg.inv(root_R_global)
-
+        # Matrix to 6D
         root_y_height.append(frame.hip_local_position.y)
         current_frame_rotations = []
         for joint in joints_to_process:
@@ -101,6 +97,11 @@ def extract_features(motion, start_frame, clip_length):
             current_frame_rotations.append(sixd)
             
         all_joint_6d_rotations.append(np.concatenate(current_frame_rotations))
+        
+        # Local Position
+        root_p_global = np.array(frame.joint_positions[motion.root.name])
+        root_R_global = np.array(frame.joint_global_transforms[motion.root.name])[:3, :3]
+        root_R_global_inv = np.linalg.inv(root_R_global)
 
         local_posis = []
         for joint in joints_to_process:
@@ -110,17 +111,17 @@ def extract_features(motion, start_frame, clip_length):
             p_diff = p_global - root_p_global
             p_local = root_R_global_inv @ p_diff
             local_posis.append(p_local)
-            
+            #Foot contact 처리
             if joint.name in foot_joints:
                 foot_idx = foot_joints[joint.name]
-                foot_positions[foot_idx][rel_i] = p_global
+                foot_positions[foot_idx][rel_i] = p_global #[foot_idx, frame, xyz]
                 height_contact = int(p_global[1] < height_threshold)
                 height_contacts[rel_i, foot_idx] = height_contact
             
         local_joint_positions_flat.append(np.concatenate(local_posis))  # flat
-    
+    #Foot Velocity & Contact
     foot_velocities = []
-    for foot_pos in foot_positions:
+    for foot_pos in foot_positions: #[frame, xyz]
         if foot_pos.shape[0] < 2:
             vel = np.zeros(foot_pos.shape[0])  # 클립이 너무 짧으면 0
         else:
@@ -198,8 +199,7 @@ def main():
     clip_length = 180
     feature_dim = 212
 
-    # 변경: joblib Parallel로 파일 병렬 처리
-    n_jobs = -1  # 모든 CPU 코어 사용 (또는 4 등으로 제한해서 메모리 안정)
+    n_jobs = -1  # 모든 CPU 코어 사용
     results = Parallel(n_jobs=n_jobs)(
         delayed(process_single_file)(idx, filename, clip_length, feature_dim)
         for idx, filename in enumerate(tqdm(bvh_files, desc="Parallel processing BVH files"))
@@ -218,7 +218,6 @@ def main():
         if clip_info:
             all_motion_clips.append(clip_info)
 
-    # ... (기존: mean/std 계산 및 npy 저장 – 그대로 유지)
     print("Calculating mean and std for the entire dataset...")
     if total_count == 0:
         raise ValueError("No valid data processed for stats.")
@@ -227,8 +226,6 @@ def main():
     variance = (total_sum_sq / total_count) - (mean ** 2)
     variance = np.maximum(variance, 0)
     std = np.sqrt(variance)
-
-    print(f"Y Height Mean: {mean[0]:.4f}")
 
     pos_vel_mean = mean[:4]
     pos_vel_std = std[:4]

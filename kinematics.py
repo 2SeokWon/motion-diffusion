@@ -4,6 +4,8 @@ import torch
 import torch.nn.functional as F
 from scipy.spatial.transform import Rotation
 import numpy as np
+import math
+from pyglm import glm
 
 def get_virtual_root_transform(root_positions, root_rotations):
     """
@@ -33,7 +35,7 @@ def get_virtual_root_transform(root_positions, root_rotations):
     # theta = arctan2(-fx, fz)
     fx = forward_vectors_xz[:, 0]
     fz = forward_vectors_xz[:, 2]
-    theta = np.arctan2(-fx, fz)
+    theta = np.arctan2(fx, fz)
     
     # SciPy Rotation 객체 배열 생성 (N개의 회전)
     virtual_root_rots = Rotation.from_euler('y', theta)
@@ -88,7 +90,6 @@ def euler_to_sixd(euler_angles_rad, order='yxz'):
     # 3x3 회전 행렬의 첫 두 열(6개 요소)을 반환
     return torch.stack([r11, r21, r31, r12, r22, r32], dim=-1)
 
-
 def sixd_to_euler_angles(sixd_vectors, order='yxz'):
     """
     6D 회전 표현을 오일러 각도로 변환합니다.
@@ -130,24 +131,39 @@ def sixd_to_euler_angles(sixd_vectors, order='yxz'):
 
     return torch.stack([final_alpha, beta, final_gamma], dim=-1)
 
-def sixd_to_rotation_matrix(sixd_vectors):
+def sixd_to_rotation_matrix(sixd_vectors: torch.Tensor) -> torch.Tensor:
     """
-    6D 벡터를 완전한 3x3 회전 행렬로 변환하는 헬퍼 함수.
-    이 함수는 순서에 독립적입니다.
+    6D 벡터를 완전한 3x3 회전 행렬로 변환 (안정화 버전).
+    Gram-Schmidt orthogonalization 적용 + full normalize.
+    :param sixd_vectors: [..., 6]
+    :return: [..., 3,3]
     """
-    x_raw = sixd_vectors[..., 0:3]
-    y_raw = sixd_vectors[..., 3:6]
+    x_raw = sixd_vectors[..., :3]  # [..., 3]
+    y_raw = sixd_vectors[..., 3:]  # [..., 3]
 
-    eps = 1e-8
+    # x normalize
+    x = F.normalize(x_raw, dim=-1)
 
-    x = F.normalize(x_raw, p=2, dim=-1, eps=eps)
+    # y에서 x proj 제거 후 normalize (Gram-Schmidt)
+    dot_x_y = (x * y_raw).sum(dim=-1, keepdim=True)
+    y = y_raw - dot_x_y * x
+    y = F.normalize(y, dim=-1)
 
-    z = torch.cross(x, y_raw, dim=-1)
-    z = F.normalize(z, p=2, dim=-1, eps=eps)
+    # z = cross(x, y) 후 normalize
+    z = torch.cross(x, y, dim=-1)
+    z = F.normalize(z, dim=-1)
 
-    y = torch.cross(z, x, dim=-1)
+    # Stack to rotmat
+    rotmat = torch.stack([x, y, z], dim=-1)  # [..., 3,3]
 
-    return torch.stack([x, y, z], dim=-1)
+    # Zero handling: det=0 시 closest orthogonal (SVD)
+    det = torch.det(rotmat)
+    mask = torch.abs(det - 1.0) > 1e-4  # non-orthogonal mask
+    if mask.any():
+        u, s, vh = torch.linalg.svd(rotmat[mask], full_matrices=False)
+        rotmat[mask] = u @ vh  # orthogonal approx
+
+    return rotmat
 
 def qrot(q, v):
     """
@@ -276,6 +292,92 @@ def quat_to_rotmat(quat):
 
     return R
 
+def quat_to_euler(quat, order='YXZ'):
+    """
+    쿼터니언을 YXZ 순서의 Euler 각도로 변환 (degrees).
+    BVH 파일의 원래 값 복구에 적합.
+    """
+    if order != 'YXZ':
+        raise ValueError("현재 YXZ만 지원됩니다.")
+    
+    mat = glm.mat3_cast(quat)  # 쿼터니언 → column-major 3x3 행렬
+    
+    epsilon = 1e-6
+    
+    # Gimbal lock: x ≈ +90°
+    if abs(mat[2][1] + 1.0) < epsilon:  # mat[1][2]가 row-major vs column-major 주의! glm은 mat[col][row], 그래서 mat[2][1] = mat[1,2] (row-major 기준)
+        x_deg = 90.0
+        y_deg = math.degrees(math.atan2(mat[1][0], mat[0][0]))  # mat[0,1] = mat[1][0], mat[0,0] = mat[0][0]
+        z_deg = 0.0
+        return glm.vec3(y_deg, x_deg, z_deg)  # [Y, X, Z] 순서
+    
+    # Gimbal lock: x ≈ -90°
+    elif abs(mat[2][1] - 1.0) < epsilon:
+        x_deg = -90.0
+        y_deg = math.degrees(math.atan2(-mat[1][0], mat[0][0]))
+        z_deg = 0.0
+        return glm.vec3(y_deg, x_deg, z_deg)
+    
+    # 일반 케이스
+    else:
+        x_rad = math.asin(-mat[2][1])  # mat[1,2] = mat[2][1]
+        y_rad = math.atan2(mat[2][0], mat[2][2])  # mat[0,2]=mat[2][0], mat[2,2]=mat[2][2]
+        z_rad = math.atan2(mat[0][1], mat[1][1])  # mat[1,0]=mat[0][1], mat[1,1]=mat[1][1]
+
+        return [y_rad, x_rad, z_rad]  # [Y, X, Z] 순서
+
+def mat_to_euler_yxz(mat: np.ndarray) -> list:
+    """
+    3x3 회전 행렬을 Y-X-Z 순서의 오일러 각도(라디안)로 올바르게 분해합니다.
+    이 함수는 '최종행렬 = Ry * Rx * Rz' 연산의 역과정입니다.
+
+    Args:
+        mat (np.ndarray): 분해할 3x3 회전 행렬.
+
+    Returns:
+        list: [y_rad, x_rad, z_rad] 형식의 오일러 각도 리스트.
+    """
+    # 부동 소수점 오차를 확인하기 위한 작은 값
+    epsilon = 1e-6
+
+    # YXZ 순서에서 x축 각도는 mat[1, 2] = -sin(x) 관계를 가집니다.
+    # 이 값이 -1 또는 1에 가까워지면 짐벌 락(Gimbal Lock) 상태입니다.
+
+    # 짐벌 락 체크: x가 +90도일 때
+    if abs(mat[1, 2] + 1.0) < epsilon:
+        x_rad = math.pi / 2.0
+        # 이 경우, y와 z의 합(또는 차)만 결정할 수 있습니다.
+        # 관례적으로 z를 0으로 설정하고 y를 계산합니다.
+        y_rad = math.atan2(mat[0, 1], mat[0, 0])
+        z_rad = 0
+        return [y_rad, x_rad, z_rad]
+    
+    # 짐벌 락 체크: x가 -90도일 때
+    elif abs(mat[1, 2] - 1.0) < epsilon:
+        x_rad = -math.pi / 2.0
+        y_rad = math.atan2(-mat[0, 1], mat[0, 0])
+        z_rad = 0
+        return [y_rad, x_rad, z_rad]
+    
+    # 일반적인 경우 (짐벌 락이 아닐 때)
+    else:
+        # 1. x축 각도를 먼저 계산합니다.
+        x_rad = math.asin(-mat[1, 2])
+        
+        # 2. 계산된 x각도를 이용하여 y축 각도를 계산합니다.
+        # cos(x)는 0이 아님이 보장됩니다.
+        # mat[0, 2] = sin(y) * cos(x)
+        # mat[2, 2] = cos(y) * cos(x)
+        y_rad = math.atan2(mat[0, 2], mat[2, 2])
+        
+        # 3. 계산된 x각도를 이용하여 z축 각도를 계산합니다.
+        # mat[1, 0] = sin(z) * cos(x)
+        # mat[1, 1] = cos(z) * cos(x)
+        z_rad = math.atan2(mat[1, 0], mat[1, 1])
+        
+        return [y_rad, x_rad, z_rad]
+
+
 # kinematics.py 의 Skeleton 클래스 수정
 class Skeleton:
     def __init__(self, offsets, parents, device):
@@ -320,54 +422,3 @@ class Skeleton:
             global_rotations[:, :, i] = torch.matmul(global_rotations[:, :, parent_idx], rotmats[:, :, i])
 
         return global_positions
-
-def features_to_xyz(features, skeleton, mean, std):
-    """
-    학습된 특징 벡터 시퀀스를 3D 관절 위치 시퀀스로 변환 (Forward Kinematics).
-    """
-    device = features.device
-    
-    # 1. 역정규화
-    features_unnormalized = features * std.to(device) + mean.to(device)
-    
-    # 2. 특징 벡터 분해
-    root_y_height = features_unnormalized[..., 0:1]
-    root_xz_velocity_local = features_unnormalized[..., 1:3]
-    all_joint_6d_rotations = features_unnormalized[..., 3:]
-    
-    bs, seq_len, _ = features.shape
-    num_joints = all_joint_6d_rotations.shape[-1] // 6
-    
-    # 3. 6D -> 쿼터니언
-    rotations_6d = all_joint_6d_rotations.view(bs, seq_len, num_joints, 6)
-    rotations_rotmat = sixd_to_rotation_matrix(rotations_6d)
-    rotations_quat = matrix_to_quaternion(rotations_rotmat.view(-1, 3, 3)).view(bs, seq_len, num_joints, 4)
-
-    root_rotations_quat = rotations_quat[:, :, 0, :]
-    
-    # 4. 속도를 위치로 적분
-    final_root_positions = torch.zeros(bs, seq_len, 3, device=device)
-    final_root_positions[:, 0, 1:2] = root_y_height[:, 0]
-    frame_time = 1.0 / 30.0
-
-    # 로컬 속도를 3D 벡터로 확장
-    # shape: [bs, seq_len, 3]
-    local_vel_3d = F.pad(root_xz_velocity_local, (0, 1, 0, 0)) # (x, z, 0)
-    local_vel_3d = local_vel_3d[..., [0, 2, 1]] # (x, 0, z)
-    
-    # 모든 프레임에 대한 월드 속도를 한번에 계산
-    # qrot은 브로드캐스팅을 지원해야 함
-    world_vel_increment = qrot(root_rotations_quat, local_vel_3d) * frame_time
-    
-    # 누적합(cumsum)으로 모든 프레임의 위치를 한번에 계산
-    # 첫 프레임은 [0,0,0] 이므로 pad 추가
-    world_pos_offset = torch.cumsum(F.pad(world_vel_increment[:, :-1], (0,0,1,0)), dim=1)
-    
-    final_root_positions = torch.zeros(bs, seq_len, 3, device=device)
-    final_root_positions[..., [0, 2]] = world_pos_offset[..., [0, 2]]
-    final_root_positions[..., 1:2] = root_y_height
-
-    # --- 최종 FK 수행 ---
-    xyz_positions = skeleton.forward_kinematics(rotations_quat, final_root_positions)
-    
-    return xyz_positions

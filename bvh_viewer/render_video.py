@@ -18,7 +18,7 @@ from OpenGL.GLU import *
 # 예: sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from .BVH_Parser import bvh_parser, Motion, MotionFrame, Joint, get_preorder_joint_list
 from .Rendering import draw_humanoid
-from kinematics import sixd_to_rotation_matrix, matrix_to_quaternion_scipy
+from kinematics import sixd_to_rotation_matrix
 from .Transforms import translation_matrix
 from .utils import draw_axes, set_lights
 
@@ -34,7 +34,7 @@ def tensor_to_motion_object(generated_tensor: np.ndarray, template_bvh_path: str
     """
     print("Converting tensor to Motion object...")
     
-    root, motion_template = bvh_parser(template_bvh_path)
+    root, _ = bvh_parser(template_bvh_path)
     # quaternion_frame이 비어있을 수 있으므로, bvh_parser가 생성한 joint 계층구조에서 순서를 가져옵니다.
     joint_order = [j.name for j in get_preorder_joint_list(root) if "Site" not in j.name]
 
@@ -46,7 +46,6 @@ def tensor_to_motion_object(generated_tensor: np.ndarray, template_bvh_path: str
     num_frames = generated_tensor.shape[0]
     motion_obj = Motion(frames=[], frame_time=1.0/FPS, frame_len=num_frames)
 
-    # --- 계산을 위해 GLM 타입으로 변수 초기화 ---
     current_global_pos_glm = glm.vec3(0.0, 0.0, 0.0)
     current_vr_rot_glm = glm.quat(1.0, 0.0, 0.0, 0.0)
     
@@ -84,7 +83,7 @@ def tensor_to_motion_object(generated_tensor: np.ndarray, template_bvh_path: str
         vr_rotation = glm.mat4_cast(current_vr_rot_glm)
         motion_frame.virtual_transform = vr_translation @ vr_rotation
         
-        t_hip_global = glm.translate(glm.mat4(1.0), current_global_pos_glm) @ glm.mat4_cast(current_hip_global_rot_glm)
+        t_hip_global = glm.translate(glm.mat4(1.0), current_global_pos_glm) @ glm.mat4_cast(current_hip_global_rot_glm) 
         t_local_hip = glm.inverse(motion_frame.virtual_transform) @ t_hip_global
         motion_frame.hip_local_position = glm.vec3(t_local_hip[3])
         motion_frame.hip_local_position.y = root_y_height
@@ -101,7 +100,7 @@ def tensor_to_motion_object(generated_tensor: np.ndarray, template_bvh_path: str
     print("Performing Forward Kinematics for all frames...")
     for frame in tqdm(motion_obj.quaternion_frame, desc="Calculating FK"):
         motion_obj.compute_forward_kinematics(root, frame.virtual_transform, frame)
-
+        #여기서 joint_global_transform를 통해 root를 꺼내오고 나머지는 그냥.. joint_rotation 쓰면 되겠는데
     print("Conversion complete.")
     return root, motion_obj
 

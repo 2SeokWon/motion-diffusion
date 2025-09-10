@@ -78,16 +78,6 @@ print("\n--- Step 2: Extracting Features from BVH Files ---")
 all_motion_clips = []
 bvh_files = [f for f in os.listdir(bvh_folder_path) if f.endswith(".bvh")]
 
-try:
-    r_hip_idx = joint_names.index('RightHip')
-    l_hip_idx = joint_names.index('LeftHip')
-    r_shoulder_idx = joint_names.index('RightShoulder')
-    l_shoulder_idx = joint_names.index('LeftShoulder')
-except ValueError as e:
-    print(f"Error: Required joints not found in skeleton: {e}"); exit()
-
-    
-
 for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
     filepath = os.path.join(bvh_folder_path, filename)
     try:
@@ -114,10 +104,6 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
 
         # 3. 데이터 정규화
         positions_3d_normalized = positions_3d_orig.copy() # 원본 보존을 위해 복사
-        
-        # 바닥에 놓기
-        floor_height = positions_3d_normalized.reshape(-1, 3)[:, 1].min()
-        positions_3d_normalized[:, :, 1] -= floor_height
         
         # 초기 위치 원점 맞추기
         root_pos_init_xz = positions_3d_normalized[0, 0, :] * np.array([1, 0, 1])
@@ -158,10 +144,6 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
 
         all_local_rotations_6d = torch.cat([x_vec, y_vec], dim=-1).reshape(num_frames, -1).numpy()  # (num_frames, num_joints*6), NumPy
 
-        #all_local_rotations_rad = Rotation.from_quat(all_local_rotations_quat.reshape(-1, 4)).as_euler('yxz', degrees=False)
-        #all_local_rotations_6d = euler_to_sixd(torch.from_numpy(all_local_rotations_rad).float()).numpy().reshape(num_frames, -1)
-        
-        # ### [수정] 8단계: 루트 속도 계산 (가상 루트 정보 사용) ###
         # 가상 루트의 전역 속도 계산
         root_velocity_global = virtual_root_positions[1:] - virtual_root_positions[:-1]
         
@@ -173,9 +155,6 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
         virtual_root_rots_obj = Rotation.from_quat(virtual_root_quats)
         root_angular_velocity_y = np.zeros(num_frames - 1)  # 결과 배열
         prev_yaw = None
-
-        #debug_frame_start = 0  # flip 시작 프레임 (당신이 아는 값으로 변경)
-        #debug_frame_end = num_frames    # flip 끝 프레임
 
         for i in range(num_frames):
             # i=0은 스킵 (velocity는 1부터)
@@ -203,19 +182,6 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
             
             # 이전 yaw 업데이트
             prev_yaw = current_yaw
-            # --- [테스트용 print] 전체 velocity 배열 출력 (한 번만) ---
-            #if i == num_frames - 1:  # 마지막 프레임에서 전체 출력
-            #    print(f"Root Angular Velocity Y (전체): {root_angular_velocity_y}")
-                # 큰 jump 확인: ±π 근처 값 세기
-            #   large_jumps = np.abs(root_angular_velocity_y) > (math.pi * 0.9)  # ±π * 0.9 이상을 jump로 간주
-            #   print(f"큰 jump 개수 (±π 근처): {np.sum(large_jumps)} / {len(root_angular_velocity_y)}")
-            
-            # --- [테스트용 print] flip 프레임 주변에서 이전/현재 yaw 출력 ---
-            #if debug_frame_start <= i <= debug_frame_end:
-            #    print(f"Frame {i}: Prev Yaw = {prev_yaw:.4f}, Current Yaw = {current_yaw:.4f}, Velocity = {angular_velocity:.4f}")
-
-        #virtual_root_rot_diff = (virtual_root_rots_obj[1:] * virtual_root_rots_obj[:-1].inv())
-        #root_angular_velocity_y = virtual_root_rot_diff.as_euler('yxz', degrees=False)[:, 0]
 
         # 9. 최종 특징 벡터 조립
         #    (local_joint_position을 사용하지 않는 원래 버전 기준)
@@ -258,7 +224,7 @@ for idx, filename in enumerate(tqdm(bvh_files, desc="Processing BVH files")):
             local_joint_positions_flat,    # 22 * 3 = 66
             all_joint_6d_rotations,        # 23 * 6 = 138
         ], axis=1)
-        
+        print(filename)
         clip_filename = f"clip_{idx:04d}.npz"
         clip_filepath = os.path.join(output_processed_dir, clip_filename)
 

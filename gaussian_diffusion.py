@@ -40,7 +40,7 @@ class GaussianDiffusion(nn.Module):
         self.sqrt_recip_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod)
         self.sqrt_recipm_alphas_cumprod = np.sqrt((1.0 / self.alphas_cumprod) - 1.0)
 
-    def _predict_xstart_from_eps(self, x_t, t, eps): #q_sample 식을 통해 x_0 도출, x_t, eps: (batch_size, seq_len, input_feats)
+    def _predict_xstart_from_eps(self, x_t, t, eps): #p_sample 식을 통해 x_0 도출, x_t, eps: (batch_size, seq_len, input_feats)
         return (
             _extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t -
             _extract_into_tensor(self.sqrt_recipm_alphas_cumprod, t, x_t.shape) * eps
@@ -57,22 +57,23 @@ class GaussianDiffusion(nn.Module):
     
     def training_losses(self, model, x_start, t, noise=None):
         if noise is None:
-            noise = torch.randn_like(x_start)
+            noise = torch.randn_like(x_start) #[batch_size, seq_len, input_feats]
         
-        x_t = self.q_sample(x_start, t, noise)
+        x_t = self.q_sample(x_start, t, noise) #[batch_size, seq_len, input_feats]
 
-        model_output = model(x_t, t) #이걸 노이즈로 나오게 했음 x_t에서 x_0으로 가는 노이즈?
+        model_output = model(x_t, t) #noise 예측
 
         target = noise
     
-        loss_simple = F.mse_loss(model_output, target)
+        loss_simple = F.mse_loss(model_output[:,:,:-4], target[:,:,:-4])
+        foot_loss = F.mse_loss(model_output[:,:,-4:], target[:,:,-4:])
         
         #pred_x_start = self._predict_xstart_from_eps(x_t, t, model_output)
         #target_velocity = x_start[:, 1:] - x_start[:, :-1] #x_start의 속도, (batch_size, seq_len-1, input_feats)
         #pred_velocity = pred_x_start[:, 1:] - pred_x_start[:, :-1]
         #loss_vel = F.mse_loss(pred_velocity, target_velocity)
 
-        #lambda_vel = 0.3 #속도에 대한 가중치
+        lambda_fc = 0.2
         
         #lambda_fk = 0.0 #가중치 변경 가능 당장은 사용 X
         #loss_fk = torch.tensor(0.0, device=x_start.device)
@@ -86,16 +87,18 @@ class GaussianDiffusion(nn.Module):
         
         #final_loss = loss_simple + lambda_vel * loss_vel
         
-        final_loss = loss_simple #현재는 FK loss를 사용하지 않음
+        final_loss = loss_simple + lambda_fc * foot_loss #현재는 FK loss를 사용하지 않음
         return {
             'loss': final_loss, 
-            'loss_simple': loss_simple.item(),
+            'loss_simple': loss_simple,
+            'foot_loss': foot_loss,
             #'loss_vel': loss_vel.item()
         }
 
     def p_mean_variance(self, model, x_t, t): #모델을 통해 노이즈 예측하고 예측값으로부터 x_0을 구하고, x_{t-1}의 평균과 분산을 계산
         model_output = model(x_t, t)
         pred_xstart = self._predict_xstart_from_eps(x_t, t, model_output)
+        #pred_xstart = model_output
         model_mean = (
             _extract_into_tensor(self.posterior_mean_coef1, t, x_t.shape) * pred_xstart +
             _extract_into_tensor(self.posterior_mean_coef2, t, x_t.shape) * x_t

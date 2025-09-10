@@ -7,3 +7,6 @@ results_with_vel/
 results/
 Miniconda3-latest-Linux-x86_64.sh
 __pycache__
+wandb/
+processed_data_new/
+dataset/
