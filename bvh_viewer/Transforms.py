@@ -69,12 +69,12 @@ def extract_vroot_transform(quat_rotation, position):
     ap = glm.vec3(position)
     ar = quat_rotation  # glm.quat 가정
 
-    # safe 버전 호출
+    #Virtual root 기준 hip의 local position(0,y,0), rotation(Pitch, Roll)
     new_ap, new_ar = get_pelvis_virtual_safe(ap, ar)
     
     ap_global = ap - new_ap  # global xz
     
-    ar_mat = glm.mat4_cast(new_ar) 
+    ar_mat = glm.mat4_cast(ar) 
     yaw = math.atan2(ar_mat[2][0], ar_mat[2][2]) #global yaw
     q_yaw = glm.angleAxis(yaw, glm.vec3(0,1,0))
     R_yaw = glm.mat4_cast(q_yaw)

@@ -38,9 +38,9 @@ def tensor_to_motion_object(generated_tensor: np.ndarray, template_bvh_path: str
     # quaternion_frame이 비어있을 수 있으므로, bvh_parser가 생성한 joint 계층구조에서 순서를 가져옵니다.
     joint_order = [j.name for j in get_preorder_joint_list(root) if "Site" not in j.name]
 
-    num_joints = len(joint_order)  # <<<< 추가: 동적 계산
+    num_joints = len(joint_order) 
     sixd_dim = num_joints * 6
-    pos_dim = (num_joints - 1) * 3  # local pos dim (root 제외)
+    pos_dim = (num_joints - 1) * 3  
     sixd_start = 4 + pos_dim
 
     num_frames = generated_tensor.shape[0]
@@ -54,7 +54,6 @@ def tensor_to_motion_object(generated_tensor: np.ndarray, template_bvh_path: str
     for i in tqdm(range(num_frames), desc="Reconstructing Motion"):
         frame_features = generated_tensor[i]
         
-        # 특징 분해 (차원은 N=23 기준)
         root_y_height = frame_features[0]
         root_xz_velocity_local = frame_features[1:3]
         root_y_angular_velocity = frame_features[3]
@@ -172,10 +171,11 @@ def render_movie(root, motion_obj, output_path):
         recorded_frames.append(image)
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
-
+    
+    save_video(recorded_frames, output_path, FPS)
+    
     glDeleteRenderbuffers(1, [rbo])
     glDeleteTextures(1, [texture])
     glDeleteFramebuffers(1, [fbo])
     
-    save_video(recorded_frames, output_path, FPS)
     pygame.quit()
