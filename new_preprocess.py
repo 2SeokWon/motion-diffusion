@@ -12,7 +12,7 @@ from bvh_viewer.BVH_Parser import bvh_parser, get_preorder_joint_list
 
 # --- 1. 설정 (Configuration) ---
 bvh_folder_path = "./dataset/"
-output_processed_dir = "./processed_data_new/"
+output_processed_dir = "./processed_data/"
 template_bvh_path = "./dataset/Aeroplane_BR.bvh" 
 output_metadata_path = os.path.join(output_processed_dir, "metadata.json")
 os.makedirs(output_processed_dir, exist_ok=True)
@@ -152,7 +152,7 @@ def extract_features(motion, start_frame, clip_length):
 
     return final_features, global_pos_xz
 
-def process_single_file(idx, filename, clip_length, feature_dim):  # 새 함수: 하나의 BVH 파일 처리 (병렬용)
+def process_single_file(idx, filename, clip_length, class_name, class_idx, feature_dim):
     filepath = os.path.join(bvh_folder_path, filename)
     local_count = 0
     local_sum = np.zeros(feature_dim)
@@ -163,26 +163,24 @@ def process_single_file(idx, filename, clip_length, feature_dim):  # 새 함수:
         root, motion = bvh_parser(filepath)
         motion.list_to_quaternion(root)
         motion.save_virtual_root_info(root)
-
-        # overlapping subsequence로 통계 누적
-        if motion.frame_len >= clip_length:
-            for start_frame in tqdm(range(motion.frame_len - clip_length + 1), desc=f"Overlapping in {filename}", leave=False):
-                final_features, _ = extract_features(motion, start_frame, clip_length)
-                if not np.isfinite(final_features).all():
-                    nan_count = np.isnan(final_features).sum()
-                    inf_count = np.isinf(final_features).sum()
-                    print(f"Warning: NaN({nan_count})/Inf({inf_count}) in {filename} at start={start_frame}. Skipping.")
-                    continue
-                local_count += final_features.shape[0]
-                local_sum += np.sum(final_features, axis=0)
-                local_sum_sq += np.sum(final_features**2, axis=0)
-
         # 전체 motion의 npz 저장
         final_features, _ = extract_features(motion, 0, motion.frame_len)
+        if not np.isfinite(final_features).all():
+            nan_count = np.isnan(final_features).sum()
+            inf_count = np.isinf(final_features).sum()
+            print(f"Warning: NaN({nan_count})/Inf({inf_count}) in {filename}. Skipping stats.")
+        else:
+            local_count += final_features.shape[0]
+            local_sum += np.sum(final_features, axis=0)
+            local_sum_sq += np.sum(final_features**2, axis=0)
+
         clip_filename = f"clip_{idx:04d}.npz"
         clip_filepath = os.path.join(output_processed_dir, clip_filename)
         np.savez(clip_filepath, features=final_features)
-        clip_info = {"path": clip_filename, "length": final_features.shape[0]}
+        clip_info = {"path": clip_filename, 
+                     "length": final_features.shape[0], 
+                     "class_name": class_name,
+                     "class_idx": class_idx}
 
     except Exception as e:
         print(f"Error in {filename}: {e}")
@@ -195,14 +193,24 @@ def process_single_file(idx, filename, clip_length, feature_dim):  # 새 함수:
 def main():
     print("\n--- Step 1: Extracting Features from BVH Files ---")
     bvh_files = [f for f in os.listdir(bvh_folder_path) if f.endswith(".bvh")]
-    
+    class_names = sorted(list(set([f.split('_')[0] for f in bvh_files])))
+    class_map = {name: i for i, name in enumerate(class_names)}
+
     clip_length = 180
     feature_dim = 212
 
-    n_jobs = -1  # 모든 CPU 코어 사용
+    tasks_to_run = []
+    for idx, filename in enumerate(bvh_files):
+        class_name = filename.split('_')[0]
+        if class_name in class_map:
+            class_idx = class_map[class_name]
+            tasks_to_run.append(
+                delayed(process_single_file)(idx, filename, clip_length, class_name, class_idx, feature_dim)
+            )
+
+    n_jobs = -1
     results = Parallel(n_jobs=n_jobs)(
-        delayed(process_single_file)(idx, filename, clip_length, feature_dim)
-        for idx, filename in enumerate(tqdm(bvh_files, desc="Parallel processing BVH files"))
+        tqdm(tasks_to_run, desc="Parallel processing BVH files")
     )
 
     # 결과 취합 (병렬 반환값 모아서 통계 계산)

@@ -3,13 +3,8 @@ import torch
 import os
 from scipy.spatial.transform import Rotation
 
-# 필요한 유틸리티 함수들을 import
-# kinematics.py가 같은 경로 혹은 파이썬 경로에 있어야 합니다.
 from kinematics import sixd_to_rotation_matrix
 
-# --- [추가] 쿼터니언 곱셈을 위한 간단한 헬퍼 함수 ---
-# Scipy의 Rotation 객체는 내부적으로 (x,y,z,w) 순서를 사용하지만,
-# 우리가 다루는 데이터(w,x,y,z)와 연산을 위해 순서를 맞춘 간단한 함수입니다.
 def qmul_wxyz(q1, q2):
     # (w,x,y,z) -> (x,y,z,w)
     q1_scipy = q1[[1, 2, 3, 0]]
@@ -30,9 +25,7 @@ def reconstruct_bvh_from_features(
     template_path,
     output_path
 ):
-    """
-    새로운 '가상 루트' 기반 특징 벡터를 사용하여 BVH를 재구성합니다.
-    """
+
     print(f"Reconstructing BVH file at: {output_path}")
 
     # --- 1. 특징 벡터 분해 ---
@@ -167,7 +160,6 @@ def main():
         features_normalized = (features_original[:, :208] - mean) / std
         features_reconstructed = features_normalized * std + mean
         
-        #features_reconstructed = features_original
         is_close = np.allclose(features_original[:, :208], features_reconstructed)
         print(f"Mathematical integrity check (is data recovered?): {is_close}")
         if not is_close:

@@ -7,10 +7,10 @@ from bvh_viewer.BVH_Parser import bvh_parser
 
 def main():
     # --- 설정 ---
-    original_bvh_path = "./dataset/Drunk_TR1.bvh"
+    original_bvh_path = "./dataset/Aeroplane_TR1.bvh"
     template_bvh_path = "./dataset/Drunk_TR1.bvh" # 스켈레톤 구조가 동일하므로 같은 파일 사용
-    output_video_path = "./verification/perfect_round_trip.mp4"
-    stats_dir = "./processed_data_new/"
+    output_video_path = "./verification/perfect_round_trip_2.mp4"
+    stats_dir = "./processed_data/"
     # ------------
     print(stats_dir)
     print("Step 1: Loading normalization statistics...")
@@ -29,7 +29,7 @@ def main():
     # 1. 원본 BVH 파일을 파싱하고, 전처리하여 '정답' 특징 벡터를 추출합니다.
     print("Step 1: Extracting features from original BVH...")
     root, original_motion = bvh_parser(original_bvh_path)
-    features_original, _ = extract_features(original_motion, 0, 180)
+    features_original, _ = extract_features(original_motion, 0, 1800)
     print("--- Checking Input Tensor Integrity ---")
     if np.isnan(features_original).any():
         print("FATAL ERROR: NaN (Not a Number) detected in features!")
@@ -53,9 +53,9 @@ def main():
 
     # 비정규화된 특징들을 다시 하나의 텐서로 결합
     features_denormalized = np.concatenate([
-        root_denormalized, 
-        positions_denormalized, 
-        rotations_denormalized
+        root_features, 
+        position_features, 
+        rotation_features
     ], axis=1).astype(np.float32)
     print("Denormalization complete.")
     # 2. 방금 추출한 '정답' 특징 벡터를 가지고 바로 Motion 객체로 복원합니다.
