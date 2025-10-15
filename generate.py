@@ -14,12 +14,16 @@ def generate():
     parser = argparse.ArgumentParser(description="Generate Human Motion from a trained MDM model")
     parser.add_argument('--checkpoint_path', type=str, required=True,
                         help="Path to the model checkpoint (.pt) file.")
-    parser.add_argument('--num_samples', type=int, default=5,
+    parser.add_argument('--num_samples', type=int, default=3,
                         help="Number of motion samples to generate.")
     parser.add_argument('--seq_len', type=int, default=180,
                         help="Length of the generated motion sequence in frames.")
     parser.add_argument('--class_idx', type=int, default=None,
                         help="Class label for conditional generation (optional, 0 ~ 6).")
+    parser.add_argument('--type_idx', type=int, default=None,
+                        help="Type label for conditional generation (optional, 0 ~ 6).")
+    parser.add_argument('--guidance_scale', type=float, default=3.0,
+                        help="CFG guidance scale (1.0 = no CFG, >1 for stronger conditioning).")
     args = parser.parse_args()
 
     # --- 고정된 설정값들 ---
@@ -37,7 +41,7 @@ def generate():
     # 현재 시간을 포함한 고유한 출력 폴더 생성
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     output_dir = f"./results/generated_{timestamp}"
-    processed_data_path = "./processed_data"
+    processed_data_path = "./processed_data_cond"
     skeleton_template_path = "./dataset/Aeroplane_BR.bvh"
     os.makedirs(output_dir, exist_ok=True)
     print(f"Output directory: {output_dir}")
@@ -67,8 +71,8 @@ def generate():
     # MotionDataset 객체를 생성하여 mean, std를 쉽게 가져옴
     print("Loading dataset statistics (mean/std)...")
     dataset = MotionDataset(processed_data_path=processed_data_path, seq_len=args.seq_len)
-    class_names = dataset.classes
-
+    class_names = dataset.name_classes
+    type_names = dataset.type_classes
     for i in range(args.num_samples):
         print(f"\n--- Generating and Rendering Sample {i+1}/{args.num_samples} ---")
         
@@ -83,30 +87,36 @@ def generate():
             classes = None  # unconditional
             class_name = "unconditional"
             print("Generating unconditionally (no class)")
+        
+        if args.type_idx is not None:
+            if 0 <= args.type_idx < len(type_names):
+                types = torch.tensor([args.type_idx], device=device)  # [1] tensor (배치 1)
+                type_name = type_names[args.type_idx]  # 파일 이름용
+                print(f"Generating with type: {type_name} (index {args.type_idx})")
+            else:
+                raise ValueError(f"Invalid type_idx: {args.type_idx} (must be 0-{len(type_names)-1})")
+        else:
+            types = None  # unconditional
+            type_name = "unconditional"
+            print("Generating unconditionally (no type)")
 
-        model_kwargs = {'classes': classes}  # model_kwargs 구성
+        model_kwargs = {'classes_name': classes, 'classes_type': types}  # model_kwargs 구성
 
         # 4-1. 텐서 생성 및 역정규화
         sample_shape = (1, args.seq_len, input_feats)
         with torch.no_grad():
-            generated_motion_norm = diffusion.p_sample_loop(model, sample_shape, model_kwargs=model_kwargs)
-        #mean = np.concatenate([dataset.pos_vel_mean, dataset.position_mean, dataset.rotation_mean])
-        #std = np.concatenate([dataset.pos_vel_std, dataset.position_std, dataset.rotation_std])
-
+            generated_motion_norm = diffusion.cfg_p_sample_loop(model, sample_shape, model_kwargs, guidance_scale=args.guidance_scale)
+        
         mean = np.hstack([dataset.pos_vel_mean, dataset.position_mean, dataset.rotation_mean])
         std = np.hstack([dataset.pos_vel_std, dataset.position_std, dataset.rotation_std])
-        
-        print(f"generated_motion_norm shape: {generated_motion_norm.shape}")
-        print(f"mean shape: {mean.shape}, std shape: {std.shape}")
 
         generated_motion = generated_motion_norm.cpu().numpy()[0]*std[:] + mean
-        # 4-2. 텐서를 Motion 객체로 변환
+
         root, motion_obj = tensor_to_motion_object(generated_motion, skeleton_template_path)
 
         output_path_bvh = os.path.join(output_dir, f"sample_{i+1}.bvh")
         write_bvh(root, motion_obj, output_path_bvh)
 
-        # 4-3. Motion 객체를 영상으로 렌더링
         output_path = os.path.join(output_dir, f"sample_{i+1}.mp4")
         render_movie(root, motion_obj, output_path)
 

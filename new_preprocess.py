@@ -12,7 +12,7 @@ from bvh_viewer.BVH_Parser import bvh_parser, get_preorder_joint_list
 
 # --- 1. 설정 (Configuration) ---
 bvh_folder_path = "./dataset/"
-output_processed_dir = "./processed_data/"
+output_processed_dir = "./processed_data_cond/"
 template_bvh_path = "./dataset/Aeroplane_BR.bvh" 
 output_metadata_path = os.path.join(output_processed_dir, "metadata.json")
 os.makedirs(output_processed_dir, exist_ok=True)
@@ -28,7 +28,9 @@ def extract_features(motion, start_frame, clip_length):
     prev_yaw = None
     prev_global_pos_xz = None
     global_pos_xz = []
+    global_y_angular = []
     
+    """
     foot_joints = {
         "RightAnkle" : 0,
         "RightToe" : 1,
@@ -47,6 +49,7 @@ def extract_features(motion, start_frame, clip_length):
     ]
     
     height_contacts = np.zeros((clip_length, 4), dtype=int)
+    """
 
     ordered_joints = get_preorder_joint_list(motion.root)
     joints_to_process = [j for j in ordered_joints if "End" not in j.name]
@@ -68,6 +71,7 @@ def extract_features(motion, start_frame, clip_length):
             if angular_velocity < -math.pi: angular_velocity += 2 * math.pi
         root_y_angular_velocity.append(angular_velocity)
         prev_yaw = vr_yaw
+        #global_y_angular.append(vr_yaw) # global yaw for trajectory
 
         #xz velocity 계산
         vr_pos_xz = np.array([vr_pos[0], vr_pos[2]])
@@ -81,7 +85,7 @@ def extract_features(motion, start_frame, clip_length):
             linear_velocity_local = np.array([local_vel_3d[0], local_vel_3d[2]])
         root_xz_velocity.append(linear_velocity_local)
         prev_global_pos_xz = vr_pos_xz
-        global_pos_xz.append(vr_pos_xz)
+        global_pos_xz.append(vr_pos_xz) # global position for trajectory
 
         # Matrix to 6D
         root_y_height.append(frame.hip_local_position.y)
@@ -111,14 +115,16 @@ def extract_features(motion, start_frame, clip_length):
             p_diff = p_global - root_p_global
             p_local = root_R_global_inv @ p_diff
             local_posis.append(p_local)
+            """
             #Foot contact 처리
             if joint.name in foot_joints:
                 foot_idx = foot_joints[joint.name]
                 foot_positions[foot_idx][rel_i] = p_global #[foot_idx, frame, xyz]
                 height_contact = int(p_global[1] < height_threshold)
                 height_contacts[rel_i, foot_idx] = height_contact
-            
+            """
         local_joint_positions_flat.append(np.concatenate(local_posis))  # flat
+    """
     #Foot Velocity & Contact
     foot_velocities = []
     for foot_pos in foot_positions: #[frame, xyz]
@@ -133,26 +139,31 @@ def extract_features(motion, start_frame, clip_length):
     for idx in range(4):
         vel_contact = (foot_velocities[idx] < velocity_threshold).astype(int)
         foot_contacts[:, idx] = height_contacts[:, idx] & vel_contact
-    
+    """
     root_y_height = np.array(root_y_height).reshape(-1, 1)
     root_xz_velocity = np.array(root_xz_velocity)
     root_y_angular_velocity = np.array(root_y_angular_velocity)[:, np.newaxis]
     local_joint_positions_flat = np.array(local_joint_positions_flat)
     all_joint_6d_rotations = np.array(all_joint_6d_rotations)
-
-    final_features = np.concatenate([
-        root_y_height, root_xz_velocity, root_y_angular_velocity,
-        local_joint_positions_flat, all_joint_6d_rotations,
-        foot_contacts.astype(np.float32)
-    ], axis=1) #212
-    
+    """
     global_pos_xz = np.array(global_pos_xz)
     if len(global_pos_xz) > 0:
         global_pos_xz -= global_pos_xz[0]
 
+    global_y_angular = np.array(global_y_angular)[:, np.newaxis]
+    if len(global_y_angular) > 0:
+        global_y_angular -= global_y_angular[0]
+    """
+    final_features = np.concatenate([
+        root_y_height, root_xz_velocity, root_y_angular_velocity,
+        local_joint_positions_flat, all_joint_6d_rotations,
+        #global_pos_xz, global_y_angular #Trajectory (global xz, global yaw)
+        #foot_contacts.astype(np.float32)
+    ], axis=1) #211
+    
     return final_features, global_pos_xz
 
-def process_single_file(idx, filename, clip_length, class_name, class_idx, feature_dim):
+def process_single_file(idx, filename, class_name, class_name_idx, class_type, class_type_idx, feature_dim):
     filepath = os.path.join(bvh_folder_path, filename)
     local_count = 0
     local_sum = np.zeros(feature_dim)
@@ -180,7 +191,9 @@ def process_single_file(idx, filename, clip_length, class_name, class_idx, featu
         clip_info = {"path": clip_filename, 
                      "length": final_features.shape[0], 
                      "class_name": class_name,
-                     "class_idx": class_idx}
+                     "class_name_idx": class_name_idx,
+                     "class_type": class_type,
+                     "class_type_idx": class_type_idx}
 
     except Exception as e:
         print(f"Error in {filename}: {e}")
@@ -194,19 +207,25 @@ def main():
     print("\n--- Step 1: Extracting Features from BVH Files ---")
     bvh_files = [f for f in os.listdir(bvh_folder_path) if f.endswith(".bvh")]
     class_names = sorted(list(set([f.split('_')[0] for f in bvh_files])))
-    class_map = {name: i for i, name in enumerate(class_names)}
+    class_types = sorted(list(set([f.split('_')[1].split('.')[0] for f in bvh_files])))
 
-    clip_length = 180
-    feature_dim = 212
+    class_name_map = {name: i for i, name in enumerate(class_names)}
+    class_type_map = {type: i for i, type in enumerate(class_types)}
+
+    feature_dim = 208
 
     tasks_to_run = []
     for idx, filename in enumerate(bvh_files):
         class_name = filename.split('_')[0]
-        if class_name in class_map:
-            class_idx = class_map[class_name]
-            tasks_to_run.append(
-                delayed(process_single_file)(idx, filename, clip_length, class_name, class_idx, feature_dim)
-            )
+        class_type = filename.split('_')[1].split('.')[0]
+        if class_name in class_name_map:
+            class_name_idx = class_name_map[class_name]
+        if class_type in class_type_map:
+            class_type_idx = class_type_map[class_type]
+
+        tasks_to_run.append(
+            delayed(process_single_file)(idx, filename, class_name, class_name_idx, class_type, class_type_idx, feature_dim)
+        )
 
     n_jobs = -1
     results = Parallel(n_jobs=n_jobs)(
@@ -241,17 +260,21 @@ def main():
     position_std = std[4:70]
     rotation_mean = mean[70:208]
     rotation_std = std[70:208]
-    foot_mean = mean[208:]
-    foot_std = std[208:]
-    
+    #foot_mean = mean[208:]
+    #foot_std = std[208:]
+    #global_pos_mean = mean[208:211]
+    #global_pos_std = std[208:211]
+
     np.save(os.path.join(output_processed_dir, "pos_vel_mean.npy"), pos_vel_mean)
     np.save(os.path.join(output_processed_dir, "pos_vel_std.npy"), pos_vel_std)
     np.save(os.path.join(output_processed_dir, "position_mean.npy"), position_mean)
     np.save(os.path.join(output_processed_dir, "position_std.npy"), position_std)
     np.save(os.path.join(output_processed_dir, "rotation_mean.npy"), rotation_mean)
     np.save(os.path.join(output_processed_dir, "rotation_std.npy"), rotation_std)
-    np.save(os.path.join(output_processed_dir, "foot_mean.npy"), foot_mean)
-    np.save(os.path.join(output_processed_dir, "foot_std.npy"), foot_std)
+    #np.save(os.path.join(output_processed_dir, "foot_mean.npy"), foot_mean)
+    #np.save(os.path.join(output_processed_dir, "foot_std.npy"), foot_std)
+    #np.save(os.path.join(output_processed_dir, "global_pos_mean.npy"), global_pos_mean)
+    #np.save(os.path.join(output_processed_dir, "global_pos_std.npy"), global_pos_std)
 
     # 최종 메타데이터 파일 저장
     with open(output_metadata_path, 'w') as f:

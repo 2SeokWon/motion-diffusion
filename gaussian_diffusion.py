@@ -1,3 +1,4 @@
+#gaussian_diffusion.py
 import torch
 import torch.nn as nn
 import numpy as np
@@ -72,13 +73,6 @@ class GaussianDiffusion(nn.Module):
             loss_joint = F.mse_loss(model_output[:,:,4:], target[:,:,4:])
         
         final_loss = F.mse_loss(model_output, target)
-        #weights = torch.exp(-2 * model.log_sigma)
-
-        #final_loss = (loss_root * weights[0] + loss_joint * weights[1]) + model.log_sigma.sum()
-        #model.log_sigma.data.clamp_(-5.0, 5.0) #안정화
-        
-        #with torch.no_grad(): # .detach()와 유사, 이 블록은 그래디언트 흐름에 영향을 주지 않음
-        #    loss_for_logging = ((weights[0] * loss_root + weights[1] * loss_joint) / weights.sum())
         
         return {
             'loss': final_loss,
@@ -86,11 +80,7 @@ class GaussianDiffusion(nn.Module):
             'loss_joint': loss_joint.detach(),
         }
 
-    def p_mean_variance(self, model, x_t, t, model_kwargs=None): #모델을 통해 노이즈 예측하고 예측값으로부터 x_0을 구하고, x_{t-1}의 평균과 분산을 계산
-        if model_kwargs is None:
-            model_kwargs = {}
-
-        model_output = model(x_t, t, **model_kwargs)
+    def p_mean_variance(self, model_output, x_t, t): #모델을 통해 노이즈 예측하고 예측값으로부터 x_0을 구하고, x_{t-1}의 평균과 분산을 계산
         pred_xstart = self._predict_xstart_from_eps(x_t, t, model_output)
         model_mean = (
             _extract_into_tensor(self.posterior_mean_coef1, t, x_t.shape) * pred_xstart +
@@ -105,9 +95,10 @@ class GaussianDiffusion(nn.Module):
         if model_kwargs is None:
             model_kwargs = {}
 
-        output = self.p_mean_variance(model, x_t, t, model_kwargs=model_kwargs)
-        noise = torch.randn_like(x_t) 
-        
+        model_output = model(x_t, t, **model_kwargs)
+        output = self.p_mean_variance(model_output, x_t, t)
+        noise = torch.randn_like(x_t)
+
         nonzero_mask = (t != 0).float().view(-1, *([1] * (len(x_t.shape) - 1))) #t가 0이냐 아니냐
 
         sample = output['mean'] + nonzero_mask * torch.exp(0.5 * output['log_variance']) * noise 
@@ -123,4 +114,119 @@ class GaussianDiffusion(nn.Module):
         for i in tqdm(reversed(range(0,self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
             t = torch.tensor([i] * shape[0], device=device) #현재 timestep
             motion = self.p_sample(model, motion, t, model_kwargs=model_kwargs)['sample']
+        return motion
+    
+    def cfg_p_sample_loop(self, model, shape, model_kwargs=None, guidance_scale=3.0):
+        if model_kwargs is None:
+            model_kwargs = {}
+
+        if guidance_scale <= 1.0 or (model_kwargs.get('classes_name') is None and model_kwargs.get('classes_type') is None):
+            print("Warning: guidance_scale <= 1.0 or no class provided, running standard p_sample_loop.")
+            return self.p_sample_loop(model, shape, model_kwargs=model_kwargs)
+        
+        device = next(model.parameters()).device
+        
+        motion = torch.randn(*shape, device=device) 
+        for i in tqdm(reversed(range(0,self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
+            t = torch.tensor([i] * shape[0], device=device) 
+            cond_model_output = model(motion, t, **model_kwargs)
+
+            uncond_kwargs = model_kwargs.copy()
+            uncond_kwargs['classes_name'] = None
+            uncond_kwargs['classes_type'] = None
+            uncond_model_output = model(motion, t, **uncond_kwargs)
+
+            guided_model_output = uncond_model_output + guidance_scale * (cond_model_output - uncond_model_output)
+            
+            output = self.p_mean_variance(guided_model_output, motion, t)
+            
+            model_mean = output['mean']
+            model_log_variance = output['log_variance']
+
+            noise = torch.randn_like(motion) if i > 0 else 0
+            motion = model_mean + torch.exp(0.5 * model_log_variance) * noise
+        
+        return motion
+    
+    #####################################################################################################################
+
+    def training_losses_traj(self, model, x_start, t, noise=None, traj_mask=False):
+
+        if noise is None:
+            noise = torch.randn_like(x_start) #[batch_size, seq_len, input_feats]
+        
+        x_t = self.q_sample(x_start, t, noise) #[batch_size, seq_len, input_feats]
+
+        model_output = model(x_t, t, traj_mask=traj_mask) #noise 예측
+        target = noise
+
+        with torch.no_grad(): # .detach()와 유사, 이 블록은 그래디언트 흐름에 영향을 주지 않음
+            loss_root = F.mse_loss(model_output[:,:,:4], target[:,:,:4])
+            loss_joint = F.mse_loss(model_output[:,:,4:208], target[:,:,4:208])
+            loss_cond = F.mse_loss(model_output[:,:,208:211], target[:,:,208:211])
+        
+        final_loss = F.mse_loss(model_output, target)
+
+        return {
+            'loss': final_loss,
+            'loss_root': loss_root.detach(),
+            'loss_joint': loss_joint.detach(),
+            'loss_cond': loss_cond.detach(),
+        }
+
+    def p_mean_variance_traj(self, model, x_t, t, traj_mask=False): #모델을 통해 노이즈 예측하고 예측값으로부터 x_0을 구하고, x_{t-1}의 평균과 분산을 계산
+        model_output = model(x_t, t, traj_mask)
+        pred_xstart = self._predict_xstart_from_eps(x_t, t, model_output)
+        model_mean = (
+            _extract_into_tensor(self.posterior_mean_coef1, t, x_t.shape) * pred_xstart +
+            _extract_into_tensor(self.posterior_mean_coef2, t, x_t.shape) * x_t
+        )
+        model_variance = _extract_into_tensor(self.posterior_variance, t, x_t.shape)
+        model_log_variance = _extract_into_tensor(self.posterior_log_variance_clipped, t, x_t.shape)
+
+        return {'mean': model_mean, 'variance': model_variance, 'log_variance': model_log_variance, 'pred_xstart': pred_xstart}
+
+    def p_sample_traj(self, model, x_t, t, traj_mask=False): #위에서 구한 x_{t-1}의 평균과 분산을 통해 실제 샘플링을 수행
+        output = self.p_mean_variance_traj(model, x_t, t, traj_mask=traj_mask)
+        noise = torch.randn_like(x_t)
+        
+        nonzero_mask = (t != 0).float().view(-1, *([1] * (len(x_t.shape) - 1))) #t가 0이냐 아니냐
+
+        sample = output['mean'] + nonzero_mask * torch.exp(0.5 * output['log_variance']) * noise 
+        return {'sample': sample, 'pred_xstart': output['pred_xstart']}
+
+    def p_sample_loop_traj(self, model, shape, traj_mask=False): #샘플링 루프
+        device = next(model.parameters()).device
+        
+        motion = torch.randn(*shape, device=device) #초기 노이즈
+        for i in tqdm(reversed(range(0,self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
+            t = torch.tensor([i] * shape[0], device=device) #현재 timestep
+            motion = self.p_sample_traj(model, motion, t, traj_mask=traj_mask)['sample']
+        return motion
+
+    def cfg_p_sample_loop_traj(self, model, shape, guidance_scale=3.0, traj_mask=False):
+        device = next(model.parameters()).device
+        
+        motion = torch.randn(*shape, device=device)
+        for i in tqdm(reversed(range(0,self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
+            t = torch.tensor([i] * shape[0], device=device)
+
+            # conditional (traj_mask=False)
+            cond_model_output = model(motion, t, traj_mask=False)
+
+            # unconditional (traj_mask=True)
+            uncond_model_output = model(motion, t, traj_mask=True)
+
+            # CFG: guided = uncond + guidance_scale * (cond - uncond)
+            guided_model_output = uncond_model_output + guidance_scale * (cond_model_output - uncond_model_output)
+
+            # guided_model_output으로 p_mean_variance 계산
+            output = self.p_mean_variance_traj(guided_model_output, motion, t, traj_mask=traj_mask)
+
+            model_mean = output['mean']
+            model_log_variance = output['log_variance']
+
+            noise = torch.randn_like(motion) if i > 0 else 0
+            motion = model_mean + torch.exp(0.5 * model_log_variance) * noise
+        
         return motion

@@ -17,9 +17,8 @@ from OpenGL.GLU import *
 # bvh_tools 폴더 등이 있는 경로를 sys.path에 추가해야 할 수 있습니다.
 # 예: sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from .BVH_Parser import bvh_parser, Motion, MotionFrame, Joint, get_preorder_joint_list
-from .Rendering import draw_humanoid
+from .Rendering import draw_humanoid, draw_virtual_root_axis
 from kinematics import sixd_to_rotation_matrix
-from .Transforms import translation_matrix
 from .utils import draw_axes, set_lights
 
 # ----------------- 설정 -----------------
@@ -163,7 +162,8 @@ def render_movie(root, motion_obj, output_path):
         
         current_frame = motion_obj.quaternion_frame[i]
         draw_humanoid(root, current_frame, color=(0.2, 0.6, 0.9))
-
+        draw_virtual_root_axis(current_frame.virtual_transform, color=(0.2, 0.6, 0.9))
+        
         glReadBuffer(GL_COLOR_ATTACHMENT0)
         pixels = glReadPixels(0, 0, *size, GL_RGB, GL_UNSIGNED_BYTE)
         image = np.frombuffer(pixels, dtype=np.uint8).reshape(size[1], size[0], 3)

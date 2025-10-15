@@ -1,3 +1,4 @@
+#model.py
 import numpy as np
 import torch
 import torch.nn as nn
@@ -74,7 +75,7 @@ class OutputProcess(nn.Module):
 
 class MotionTransformer(nn.Module):
     def __init__(self, input_feats, seq_len = None,
-                latent_dim=512, ff_size=3072, num_layers=8,
+                latent_dim=1024, ff_size=4096, num_layers=8,
                 num_heads = 8, dropout=0.1,
                 **kargs):
         super().__init__()
@@ -96,9 +97,11 @@ class MotionTransformer(nn.Module):
             nn.SiLU(),
             nn.Linear(latent_dim, latent_dim),
         )
-        self.class_embedding = ClassEmbedding(num_classes=7, dim=latent_dim) # 클래스 임베딩 레이어
-        self.null_class_emb = nn.Parameter(torch.zeros(1, self.latent_dim)) # null token embedding
-        
+        self.class_name_embedding = ClassEmbedding(num_classes=7, dim=latent_dim) # 클래스 이름 임베딩 레이어
+        self.null_class_name_emb = nn.Parameter(torch.zeros(1, self.latent_dim)) # null token embedding
+
+        self.class_type_embedding = ClassEmbedding(num_classes=7, dim=latent_dim) # 클래스 타입 임베딩 레이어
+        self.null_class_type_emb = nn.Parameter(torch.zeros(1, self.latent_dim))
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=latent_dim,
@@ -119,7 +122,10 @@ class MotionTransformer(nn.Module):
           # 출력 처리 레이어
     
     def forward(self, x, timesteps, **model_kwargs):
-        classes = model_kwargs.get('classes', None)
+        name_classes = model_kwargs.get('classes_name', None)
+        type_classes = model_kwargs.get('classes_type', None)
+        #if traj_mask:
+        #    x[:,:,208:211] = 0.0 #조건부 생성 시, 조건부 특징을 0으로 마스킹
         
         x_emb = self.input_process(x)  # [seq_len, batch_size, latent_dim]
 
@@ -127,21 +133,29 @@ class MotionTransformer(nn.Module):
         time_emb = self.time_mlp(time_emb_sin) #[batch_size, latent_dim]
         time_emb_token = time_emb.unsqueeze(0) # [1, batch_size, latent_dim]
 
-        if classes is None:
+        if name_classes is None:
             batch_size = x_emb.size(1)
-            class_emb = self.null_class_emb.expand(batch_size, -1) #[batch_size, latent_dim]
+            class_emb = self.null_class_name_emb.expand(batch_size, -1) #[batch_size, latent_dim]
         else:
-            class_emb = self.class_embedding(classes) #[batch_size, latent_dim]
+            class_emb = self.class_name_embedding(name_classes) #[batch_size, latent_dim]
 
         class_emb_token = class_emb.unsqueeze(0) # [1, batch_size, latent_dim]
 
-        x_seq = torch.cat((time_emb_token, class_emb_token, x_emb), axis=0) #[seq_len + 2, batch_size, latent_dim]
+        if type_classes is None:
+            batch_size = x_emb.size(1)
+            class_type_emb = self.null_class_type_emb.expand(batch_size, -1) #[batch_size, latent_dim]
+        else:
+            class_type_emb = self.class_type_embedding(type_classes) #[batch_size, latent_dim]
+        
+        class_type_emb_token = class_type_emb.unsqueeze(0) # [1, batch_size, latent_dim]
 
-        x_seq = self.pos_encoder(x_seq) #[seq_len + 2, batch_size, latent_dim]
+        x_seq = torch.cat((time_emb_token, class_emb_token, class_type_emb_token, x_emb), axis=0) #[seq_len + 3, batch_size, latent_dim]
 
-        output = self.seqTransEncoder(x_seq)  # [seq_len + 2, batch_size, latent_dim]
+        x_seq = self.pos_encoder(x_seq) #[seq_len + 3, batch_size, latent_dim]
 
-        output = output[2:] # [seq_len, batch_size, latent_dim] (처음 두 토큰 제거)
+        output = self.seqTransEncoder(x_seq)  # [seq_len + 3, batch_size, latent_dim]
+
+        output = output[3:] # [seq_len, batch_size, latent_dim] (처음 세 토큰 제거)
 
         predicted_noise = self.output_process(output)  # [batch_size, seq_len, input_feats]
 

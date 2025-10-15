@@ -47,7 +47,7 @@ def lookrotation(v: glm.vec3, u: glm.vec3) -> glm.quat:
 def get_pelvis_virtual_safe(ap: glm.vec3, ar: glm.quat, fallback_forward=glm.vec3(0, 0, 1)):
     up = glm.vec3(0, 1, 0)
     p = ap - glm.dot(ap, up) / glm.dot(up, up) * up
-    f = ar * glm.vec3(0, 0, 1)
+    f = ar * glm.vec3(0, 0, 1) 
     f_mod = f - glm.dot(f, up) / glm.dot(up, up) * up
     
     if glm.length(f_mod) < 1e-4:
@@ -57,7 +57,7 @@ def get_pelvis_virtual_safe(ap: glm.vec3, ar: glm.quat, fallback_forward=glm.vec
     r_inv = glm.inverse(r)
     
     new_ap = r_inv * (ap - p)
-    new_ar = r_inv * ar
+    new_ar = r_inv * ar #yaw가 제거된 rotation, pitch, roll만 남음
 
     return new_ap, new_ar
 
@@ -70,9 +70,9 @@ def extract_vroot_transform(quat_rotation, position):
     ar = quat_rotation  # glm.quat 가정
 
     #Virtual root 기준 hip의 local position(0,y,0), rotation(Pitch, Roll)
-    new_ap, new_ar = get_pelvis_virtual_safe(ap, ar)
+    new_ap, new_ar = get_pelvis_virtual_safe(ap, ar) #사실 이게 필요한가?
     
-    ap_global = ap - new_ap  # global xz
+    ap_global = ap - new_ap  # global xz 그냥 ap[0], 0, ap[2] 하면 안돼?
     
     ar_mat = glm.mat4_cast(ar) 
     yaw = math.atan2(ar_mat[2][0], ar_mat[2][2]) #global yaw
