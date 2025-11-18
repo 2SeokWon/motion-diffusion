@@ -35,7 +35,7 @@ def train():
 
     learning_rate = 1e-4
     weight_decay = 0.05
-    lr_anneal_steps = 500000 # 나중에 길게 학습할 때는 동적으로 변경하는게 좋을 듯
+    lr_anneal_steps = 500000 
     num_epochs = 500
     batch_size = 64 
     num_workers = 16
@@ -46,13 +46,12 @@ def train():
     position_features = 3
     rotation_features = 6
     root_motion_features = 4 # 루트 Y높이(1) + 수평속도(2) + y축 각속도(1) 
-    #glob_pos_features = 3
-    #foot_features = 4
+    foot_features = 2
 
     joint_position_features = (njoints - 1) * position_features #66
     joint_rotation_features = njoints * rotation_features #138
 
-    input_feats = root_motion_features + joint_position_features + joint_rotation_features #+ glob_pos_features #211
+    input_feats = root_motion_features + joint_position_features + joint_rotation_features + foot_features  #210
 
     seq_len = 180
     num_timesteps = 1000
@@ -61,8 +60,8 @@ def train():
     print(f"Using device: {device}")
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    save_dir = f"./checkpoints/{timestamp}"
-    processed_data_path = "./processed_data_cond"
+    save_dir = f"./checkpoints/traj/{timestamp}"
+    processed_data_path = "./processed_data_traj_gait"
     os.makedirs(save_dir, exist_ok=True)
 
     # --- WandB 초기화 (훈련 시작 전에) ---
@@ -88,7 +87,6 @@ def train():
     
     print("Initializing model...")
     model = MotionTransformer(
-        njoints=njoints,
         input_feats=input_feats,
         seq_len=seq_len,
     ).to(device)
@@ -126,72 +124,66 @@ def train():
         total_loss = 0.0
         total_root = 0.0
         total_joint = 0.0
-        #total_cond = 0.0
+        total_foot = 0.0
 
         progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False)
 
         for batch in progress_bar:
             x_start = batch['motion'].to(device)
             labels_name = batch['label_name'].to(device)
-            labels_type = batch['label_type'].to(device)
 
+            B = x_start.size(0)
+
+            batch_size = x_start.shape[0]
             classes_name = torch.argmax(labels_name, dim=1)
-            classes_type = torch.argmax(labels_type, dim=1)
-
-            if random.random() < mask_prob:
-                classes_name = None
-            
-            if random.random() < mask_prob:    
-                classes_type = None
-
-            #traj_mask = random.random() < mask_prob
+            rand_name = torch.rand(batch_size, device=device)
+            mask_name = rand_name < mask_prob
+            classes_name = classes_name.clone()
+            classes_name[mask_name] = -1
 
             model_kwargs = {
                 'classes_name' : classes_name,
-                'classes_type' : classes_type,
             }
 
-            t = torch.randint(0, num_timesteps, (x_start.shape[0],), device=device)
+            t = torch.randint(0, num_timesteps, (B,), device=device)
+
+            cond = x_start[:,:, 1:4].contiguous()
 
             optimizer.zero_grad()
             with autocast():
-                loss_dict = diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs, noise=None)
-                #loss_dict = diffusion.training_losses_traj(model, x_start, t, noise=None, traj_mask=traj_mask)
+                loss_dict = diffusion.training_losses_cond(model, x_start, t, cond=cond, cond_drop_prob=mask_prob, model_kwargs=model_kwargs)
                 loss = loss_dict['loss']
             
             scaler.scale(loss).backward()  # AMP: scale and backward
             scaler.step(optimizer)  # step
             scaler.update() 
-            #loss.backward()
-            #torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Gradient clipping
-            #optimizer.step()
             scheduler.step()
 
             total_loss += loss.item()
             total_root += loss_dict.get('loss_root', torch.tensor(0.0)).item()
             total_joint += loss_dict.get('loss_joint', torch.tensor(0.0)).item()
-            #total_cond += loss_dict.get('loss_cond', torch.tensor(0.0)).item()
+            total_foot += loss_dict.get('loss_foot', torch.tensor(0.0)).item()
 
             progress_bar.set_postfix({
                 'loss': f'{total_loss / (progress_bar.n + 1):.4f}',
                 'root': f'{total_root / (progress_bar.n + 1):.4f}',
                 'joint': f'{total_joint / (progress_bar.n + 1):.4f}',
-                #'cond': f'{total_cond / (progress_bar.n + 1):.4f}',
+                'foot': f'{total_foot / (progress_bar.n + 1):.4f}',
                 'lr': f'{scheduler.get_last_lr()[0]:.6f}',
             })
         
         avg_loss = total_loss / len(dataloader)
         avg_root = total_root / len(dataloader)
         avg_joint = total_joint / len(dataloader)
-        #avg_cond = total_cond / len(dataloader)
+        avg_foot = total_foot / len(dataloader)
 
-        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.4f}, Root: {avg_root:.4f}, Joint: {avg_joint:.4f}")
+        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.4f}, Root: {avg_root:.4f}, Joint: {avg_joint:.4f}, Foot: {avg_foot:.4f}")
         wandb.log({
             "epoch": epoch + 1,
             "avg_loss": avg_loss,
             "avg_root": avg_root,
             "avg_joint": avg_joint,
-            #"avg_cond": avg_cond,
+            "avg_foot": avg_foot,
             "learning_rate": scheduler.get_last_lr()[0]
         })
 

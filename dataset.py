@@ -8,23 +8,25 @@ from torch.utils.data import Dataset
 import torch.nn.functional as F
 
 class MotionDataset(Dataset):
-    def __init__(self, processed_data_path, seq_len=180, feat_bias=20.0):
+    def __init__(self, processed_data_path, seq_len=180, feat_bias=15.0):
         self.processed_data_path = processed_data_path
         self.seq_len = seq_len
         self.feat_bias = feat_bias
         metadata_path = os.path.join(processed_data_path, "metadata.json")
 
         with open(metadata_path, 'r') as f:
-            self.metadata = json.load(f)
+            meta_raw = json.load(f)
+
+        if len(meta_raw) > 0 and isinstance(meta_raw[0], list):
+            self.metadata = [item for sub in meta_raw for item in sub]
+        else:
+            self.metadata = meta_raw
 
         self.name_classes = sorted(set(clip_info['class_name'] for clip_info in self.metadata))
         self.num_name_classes = len(self.name_classes)
 
-        self.type_classes = sorted(set(clip_info['class_type'] for clip_info in self.metadata))
-        self.num_type_classes = len(self.type_classes)
-
-        self.pos_vel_mean = np.load(os.path.join(processed_data_path, "pos_vel_mean.npy"))
-        pos_vel_std = np.load(os.path.join(processed_data_path, "pos_vel_std.npy"))
+        self.pos_vel_mean = np.load(os.path.join(processed_data_path, "root_vel_mean.npy"))
+        pos_vel_std = np.load(os.path.join(processed_data_path, "root_vel_std.npy"))
         pos_vel_std /= self.feat_bias
         pos_vel_std = np.maximum(pos_vel_std, 1e-8)
         self.pos_vel_std = pos_vel_std
@@ -36,19 +38,11 @@ class MotionDataset(Dataset):
         self.rotation_mean = np.load(os.path.join(processed_data_path, "rotation_mean.npy"))
         self.rotation_std = np.load(os.path.join(processed_data_path, "rotation_std.npy"))
         self.rotation_std = np.maximum(self.rotation_std, 1e-8)
-        """
-        self.glob_pos_mean = np.load(os.path.join(processed_data_path, "global_pos_mean.npy"))
-        glob_pos_std = np.load(os.path.join(processed_data_path, "global_pos_std.npy"))
-        glob_pos_std /= self.feat_bias
-        glob_pos_std = np.maximum(glob_pos_std, 1e-8)
-        self.glob_pos_std = glob_pos_std
-        """
-        """
+
         self.foot_mean = np.load(os.path.join(processed_data_path, "foot_mean.npy"))
         foot_std = np.load(os.path.join(processed_data_path, "foot_std.npy"))
-        foot_std /= self.feat_bias
-        self.foot_std = foot_std
-        """
+        self.foot_std = np.ones_like(foot_std)
+
         # 2. 가중 샘플링을 위한 준비
         #    - 각 클립의 길이가 SEQ_LEN보다 짧으면 제외
         self.sampleable_clips = []
@@ -84,7 +78,6 @@ class MotionDataset(Dataset):
         clip_path = selected_clip_info['path']
 
         class_name_idx = selected_clip_info['class_name_idx']
-        class_type_idx = selected_clip_info['class_type_idx']
         # Cache 사용
         clip_data = self.clip_cache[clip_path]        
                 
@@ -95,17 +88,13 @@ class MotionDataset(Dataset):
         pos_vel_part = (motion_segment[:, :4] - self.pos_vel_mean) / self.pos_vel_std
         position_part = (motion_segment[:, 4:70] - self.position_mean) / self.position_std
         rotation_part = (motion_segment[:, 70:208] - self.rotation_mean) / self.rotation_std
-        #foot_part = (motion_segment[:, 208:212] - self.foot_mean) / self.foot_std
-        #glob_pos_part = (motion_segment[:, 208:211] - self.glob_pos_mean) / self.glob_pos_std
+        foot_part = (motion_segment[:, 208:210] - self.foot_mean) / self.foot_std
 
-        normalized_segment = np.concatenate([pos_vel_part, position_part, rotation_part], axis=1)
-        #normalized_segment = np.concatenate([pos_vel_part, position_part, rotation_part, glob_pos_part], axis=1)
+        normalized_segment = np.concatenate([pos_vel_part, position_part, rotation_part, foot_part], axis=1)
         motion_tensor = torch.from_numpy(normalized_segment).float()
         label_one_hot_name = F.one_hot(torch.tensor(class_name_idx), num_classes=self.num_name_classes).float()
-        label_one_hot_type = F.one_hot(torch.tensor(class_type_idx), num_classes=self.num_type_classes).float()
         
         return {
             'motion': motion_tensor, 
             'label_name': label_one_hot_name,
-            'label_type': label_one_hot_type
         }
