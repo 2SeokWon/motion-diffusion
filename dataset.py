@@ -4,8 +4,10 @@ import json
 import random
 import numpy as np
 import torch
+import math
 from torch.utils.data import Dataset
 import torch.nn.functional as F
+from new_preprocess import tensor_to_motion_object_root
 
 class MotionDataset(Dataset):
     def __init__(self, processed_data_path, seq_len=180, feat_bias=15.0):
@@ -25,11 +27,9 @@ class MotionDataset(Dataset):
         self.name_classes = sorted(set(clip_info['class_name'] for clip_info in self.metadata))
         self.num_name_classes = len(self.name_classes)
 
-        self.pos_vel_mean = np.load(os.path.join(processed_data_path, "root_vel_mean.npy"))
-        pos_vel_std = np.load(os.path.join(processed_data_path, "root_vel_std.npy"))
-        pos_vel_std /= self.feat_bias
-        pos_vel_std = np.maximum(pos_vel_std, 1e-8)
-        self.pos_vel_std = pos_vel_std
+        self.root_pos_mean = np.load(os.path.join(processed_data_path, "root_vel_mean.npy"))
+        self.root_pos_std = np.load(os.path.join(processed_data_path, "root_vel_std.npy"))
+        self.root_pos_std = np.maximum(self.root_pos_std / feat_bias, 1e-8)
 
         self.position_mean = np.load(os.path.join(processed_data_path, "position_mean.npy"))
         self.position_std = np.load(os.path.join(processed_data_path, "position_std.npy"))
@@ -38,10 +38,14 @@ class MotionDataset(Dataset):
         self.rotation_mean = np.load(os.path.join(processed_data_path, "rotation_mean.npy"))
         self.rotation_std = np.load(os.path.join(processed_data_path, "rotation_std.npy"))
         self.rotation_std = np.maximum(self.rotation_std, 1e-8)
-
+        
         self.foot_mean = np.load(os.path.join(processed_data_path, "foot_mean.npy"))
         foot_std = np.load(os.path.join(processed_data_path, "foot_std.npy"))
         self.foot_std = np.ones_like(foot_std)
+
+        self.displacement_mean = np.load(os.path.join(processed_data_path, "root_traj_mean.npy"))
+        self.displacement_std = np.load(os.path.join(processed_data_path, "root_traj_std.npy"))
+        self.displacement_std = np.maximum(self.displacement_std / self.feat_bias, 1e-8)
 
         # 2. 가중 샘플링을 위한 준비
         #    - 각 클립의 길이가 SEQ_LEN보다 짧으면 제외
@@ -51,7 +55,6 @@ class MotionDataset(Dataset):
                 self.sampleable_clips.append(clip_info)
 
         self.index_map = []
-
         for clip_idx, clip_info in enumerate(self.sampleable_clips):
             # 각 클립에서 (길이 - seq_len + 1) 만큼의 고유한 시작점을 가질 수 있습니다.
             num_possible_clips = clip_info['length'] - self.seq_len + 1
@@ -65,9 +68,10 @@ class MotionDataset(Dataset):
             clip_path = os.path.join(self.processed_data_path, clip_info['path'])
             with np.load(clip_path, mmap_mode = 'r') as data:
                 self.clip_cache[clip_info['path']] = data['features'].copy() #메모리 복사
-        
+
         print(f"Loaded {len(self.clip_cache)} clips into cache. Ready for training!")
-    
+
+
     def __len__(self):
         return len(self.index_map)
 
@@ -78,23 +82,29 @@ class MotionDataset(Dataset):
         clip_path = selected_clip_info['path']
 
         class_name_idx = selected_clip_info['class_name_idx']
+
         # Cache 사용
-        clip_data = self.clip_cache[clip_path]        
+        clip_data = self.clip_cache[clip_path]  
                 
         # 3. SEQ_LEN 길이만큼 클립을 잘라냄
-        motion_segment = clip_data[start_frame : start_frame + self.seq_len]
-        
-        # 4. 정규화 및 텐서로 변환
-        pos_vel_part = (motion_segment[:, :4] - self.pos_vel_mean) / self.pos_vel_std
-        position_part = (motion_segment[:, 4:70] - self.position_mean) / self.position_std
-        rotation_part = (motion_segment[:, 70:208] - self.rotation_mean) / self.rotation_std
-        foot_part = (motion_segment[:, 208:210] - self.foot_mean) / self.foot_std
+        end_frame = start_frame + self.seq_len
+        features = clip_data[start_frame:end_frame].copy()      # [180, 210]
 
-        normalized_segment = np.concatenate([pos_vel_part, position_part, rotation_part, foot_part], axis=1)
-        motion_tensor = torch.from_numpy(normalized_segment).float()
-        label_one_hot_name = F.one_hot(torch.tensor(class_name_idx), num_classes=self.num_name_classes).float()
+        abs_traj = tensor_to_motion_object_root(features)  # [180,3]
+
+        # Normalize motion features
+        root_vel_part = (features[:, :4] - self.root_pos_mean) / self.root_pos_std
+        position_part = (features[:, 4:70] - self.position_mean) / self.position_std
+        rotation_part = (features[:, 70:208] - self.rotation_mean) / self.rotation_std 
+        foot_part = (features[:, 208:210] - self.foot_mean) / self.foot_std
+        cond_traj = (abs_traj - self.displacement_mean) / self.displacement_std 
+
+        normalized_segment = np.concatenate([root_vel_part, position_part, rotation_part, foot_part, cond_traj], axis=1) #213
         
+        motion_tensor = torch.from_numpy(normalized_segment).float() # [seq_len, 213]
+        label_one_hot_name = F.one_hot(torch.tensor(class_name_idx), num_classes=self.num_name_classes).float()
+
         return {
-            'motion': motion_tensor, 
+            'motion': motion_tensor,
             'label_name': label_one_hot_name,
         }

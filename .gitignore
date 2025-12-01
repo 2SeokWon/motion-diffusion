@@ -10,12 +10,10 @@ __pycache__
 wandb/
 processed_data_cond/
 processed_data_traj/
+processed_data_traj_*/
 processed_data_cond_foot/
 processed_data_global_traj/
 processed_data_root7/
-processed_data_traj_gait/
-processed_data_traj_third/
-processed_data_traj_two/
 traj_code_1111/
 traj_comparison/
 traj_from_template/
@@ -23,4 +21,7 @@ verification/
 git_reload/
 Dinosaur_FW.bvh
 check.py
-traj.py
+processed_data_detrend_*/
+processed_data_position_*/
+processed_data_velocity_*/
+preprocess_detrend.py

@@ -99,13 +99,12 @@ class MotionTransformer(nn.Module):
         )
 
         self.cond_proj = nn.Sequential(
-            nn.Linear(3, latent_dim),
+            nn.Linear(7, latent_dim),
             nn.SiLU(),
             nn.Linear(latent_dim, latent_dim),
         )
-
         self.cond_gate = nn.Parameter(torch.tensor(1.0)) #학습 가능한 스칼라 게이트로 학습 중 condition의 영향력을 조절한다.
-        
+
         self.class_name_embedding = ClassEmbedding(num_classes=7, dim=latent_dim) # 클래스 이름 임베딩 레이어
         self.null_class_name_emb = nn.Parameter(torch.zeros(1, self.latent_dim)) # null token embedding
 
@@ -127,19 +126,16 @@ class MotionTransformer(nn.Module):
         self.output_process = OutputProcess(latent_dim, input_feats)
           # 출력 처리 레이어
 
-    def forward(self, x, timesteps, cond, **model_kwargs):
+    def forward(self, x, timesteps, cond=None, **model_kwargs):
         name_classes = model_kwargs.get('classes_name', None)
 
-        #x = torch.cat([x, traj_cond], dim=-1)  # [batch_size, seq_len, input_feats + 3]
-
         x_emb = self.input_process(x)  # [seq_len, batch_size, latent_dim]
-       
+
         if cond is not None:
             cond_emb = self.cond_proj(cond) # [batch_size, seq_len, latent_dim]
             cond_emb = cond_emb.permute(1,0,2) # [seq_len, batch_size, latent_dim]
-            safe_gate = torch.clamp(self.cond_gate, -5, 5) #clamp to avoid extreme values 이거를 하면 효과가?
-            x_emb = x_emb + safe_gate * cond_emb  # 조건 임베딩을 입력 임베딩에 추가
-
+            x_emb = x_emb + self.cond_gate * cond_emb  # 조건 임베딩을 입력 임베딩에 추가
+       
         time_emb_sin = timestep_embedding(timesteps, self.latent_dim) # [batch_size, latent_dim]
         time_emb = self.time_mlp(time_emb_sin) #[batch_size, latent_dim]
         time_emb_token = time_emb.unsqueeze(0) # [1, batch_size, latent_dim]
@@ -160,8 +156,7 @@ class MotionTransformer(nn.Module):
         x_seq = self.pos_encoder(x_seq) #[seq_len + 2, batch_size, latent_dim]
 
         output = self.seqTransEncoder(x_seq)  # [seq_len + 2, batch_size, latent_dim]
-
-        output = output[2:] # [seq_len, batch_size, latent_dim] (처음 두 토큰 제거)
+        output = output[2:] # [seq_len, batch_size, latent_dim] (특수 토큰 제거)
 
         predicted_noise = self.output_process(output)  # [batch_size, seq_len, input_feats]
 

@@ -5,6 +5,7 @@ import torch
 import math
 from tqdm import tqdm
 from joblib import Parallel, delayed
+from pyglm import glm
 import json
 import torch.nn.functional as F 
 import traceback
@@ -12,25 +13,24 @@ from bvh_viewer.BVH_Parser import bvh_parser, get_preorder_joint_list
 
 # --- 1. 설정 (Configuration) ---
 bvh_folder_path = "./dataset/"
-output_processed_dir = "./processed_data_traj_gait/"
+output_processed_dir = "./processed_data_position_1125/"
 template_bvh_path = "./dataset/Aeroplane_BR.bvh" 
 output_metadata_path = os.path.join(output_processed_dir, "metadata.json")
 os.makedirs(output_processed_dir, exist_ok=True)
 ROTATION_ORDER = 'yxz'
 CLIP_LENGTH = 180
+STRIDE = 5
+ROOT_DISP_DIM = 3
 
 def extract_features(motion, start_frame, clip_length):
     root_y_height = []
     root_xz_velocity = []
     root_y_angular_velocity = []
-    root_displacement = []
     local_joint_positions_flat = []
     all_joint_6d_rotations = []
 
     prev_yaw = None
     prev_global_pos_xz = None
-    global_pos_xz = []
-    yaw_list = []
 
     foot_joints = {
         "RightToe" : 0,
@@ -55,7 +55,7 @@ def extract_features(motion, start_frame, clip_length):
         vr_pos = vr_global_matrix[:3, 3]
 
         vr_yaw = math.atan2(vr_rot[0, 2], vr_rot[2, 2])
-
+        
         #y angular velocity 계산
         if prev_yaw is None:
             angular_velocity = 0.0
@@ -66,7 +66,7 @@ def extract_features(motion, start_frame, clip_length):
         root_y_angular_velocity.append(angular_velocity)
         
         prev_yaw = vr_yaw
-
+        
         #xz velocity 계산
         vr_pos_xz = np.array([vr_pos[0], vr_pos[2]])
         
@@ -80,7 +80,7 @@ def extract_features(motion, start_frame, clip_length):
             linear_velocity_local = np.array([local_vel_3d[0], local_vel_3d[2]])
         root_xz_velocity.append(linear_velocity_local)
         prev_global_pos_xz = vr_pos_xz
-    
+        
         root_y_height.append(frame.hip_local_position.y)
         
         # Matrix to 6D
@@ -120,28 +120,73 @@ def extract_features(motion, start_frame, clip_length):
             
         local_joint_positions_flat.append(np.concatenate(local_posis))  # flat
     
-    root_xz_velocity = np.array(root_xz_velocity)
-    root_y_angular_velocity = np.array(root_y_angular_velocity)[:, np.newaxis]
     root_y_height = np.array(root_y_height).reshape(-1, 1)
+    root_xz_velocity = np.array(root_xz_velocity)
+    root_y_angular_velocity = np.array(root_y_angular_velocity)
     local_joint_positions_flat = np.array(local_joint_positions_flat)
     all_joint_6d_rotations = np.array(all_joint_6d_rotations)
 
     final_features = np.concatenate([
         root_y_height, #1
         root_xz_velocity, #2
-        root_y_angular_velocity, #1
-        local_joint_positions_flat, 
-        all_joint_6d_rotations,
-        foot_contacts.astype(np.float32),
-    ], axis=1) #213
+        root_y_angular_velocity[:, np.newaxis], #1
+        local_joint_positions_flat, #66
+        all_joint_6d_rotations, #138
+        foot_contacts.astype(np.float32), #2
+    ], axis=1) #210
     
     return final_features
 
+def tensor_to_motion_object_root(generated_tensor: np.ndarray) -> np.ndarray:
+    """
+    로컬 root 속도/각속도를 적분해서 virtual root의 traj(x, z, yaw)를 반환합니다.
+    Motion까지 만들지 않고, shape (T, 3) numpy 배열만 돌려줍니다.
+
+    시작 상태: pos=(0,0), yaw=0 (tensor_to_motion_object와 동일).
+    """
+    num_frames = generated_tensor.shape[0]
+    traj = np.zeros((num_frames, 3), dtype=np.float32)
+
+    current_global_pos = glm.vec3(0.0, 0.0, 0.0)
+    current_vr_rot = glm.quat(1.0, 0.0, 0.0, 0.0)
+
+    for i in range(num_frames):
+        frame_features = generated_tensor[i]
+        root_xz_velocity_local = frame_features[1:3]
+        root_y_angular_velocity = frame_features[3]
+
+        rot_change = glm.angleAxis(root_y_angular_velocity, glm.vec3(0, 1, 0))
+        current_vr_rot = glm.normalize(current_vr_rot @ rot_change)
+
+        velocity_vec_local = glm.vec3(root_xz_velocity_local[0], 0, root_xz_velocity_local[1])
+        world_increment = current_vr_rot * velocity_vec_local
+        current_global_pos += glm.vec3(world_increment)
+        current_global_pos.y = 0.0
+
+        rot_mat = glm.mat4_cast(current_vr_rot)
+        rot_mat = np.array(rot_mat)
+        yaw = math.atan2(rot_mat[0][2], rot_mat[2][2])
+
+        traj[i, 0] = current_global_pos.x
+        traj[i, 1] = current_global_pos.z
+        traj[i, 2] = yaw
+
+    if num_frames > 1:
+        traj[:, 2] = np.unwrap(traj[:, 2], period=2 * math.pi)
+    return traj
+
 def process_single_file(idx, filename, class_name, class_name_idx, class_type, class_type_idx, feature_dim):
     filepath = os.path.join(bvh_folder_path, filename)
-    local_count = 0
-    local_sum = np.zeros(feature_dim)
-    local_sum_sq = np.zeros(feature_dim)
+    # stats for final_features (full-length only)
+    final_count = 0
+    final_sum = np.zeros(feature_dim)
+    final_sum_sq = np.zeros(feature_dim)
+
+    # stats for root_displacement (sampled with STRIDE)
+    disp_count = 0
+    disp_sum = np.zeros(ROOT_DISP_DIM)
+    disp_sum_sq = np.zeros(ROOT_DISP_DIM)
+
     clip_info = []  # npz 저장용
 
     try:
@@ -150,29 +195,45 @@ def process_single_file(idx, filename, class_name, class_name_idx, class_type, c
         motion.save_virtual_root_info(root)
 
         total_frames = motion.frame_len
-        if total_frames < CLIP_LENGTH:
-            print(f"Skipping {filename}: too short ({total_frames} < {CLIP_LENGTH})")
-            return local_count, local_sum, local_sum_sq, clip_info
-        
-        final_features = extract_features(motion, 0, total_frames)
-            
-        if not np.isfinite(final_features).all():
-            nan_count = np.isnan(final_features).sum()
-            inf_count = np.isinf(final_features).sum()
-            print(f"Warning: NaN({nan_count})/Inf({inf_count}) in {filename}. Skipping stats.")
+        #if total_frames < CLIP_LENGTH:
+        #    print(f"Skipping {filename}: too short ({total_frames} < {CLIP_LENGTH})")
+
+        num_windows = (total_frames - CLIP_LENGTH) // STRIDE + 1
+        for window_idx in range(num_windows): #통계용 Stride 5 (root_displacement 전용)
+            start_frame = window_idx * STRIDE
+            if start_frame + CLIP_LENGTH > total_frames:
+                break
+            features_seg = extract_features(motion, start_frame, CLIP_LENGTH)
+            abs_traj = tensor_to_motion_object_root(features_seg)
+            if not np.isfinite(abs_traj).all():
+                nan_count = np.isnan(abs_traj).sum()
+                inf_count = np.isinf(abs_traj).sum()
+                print(f"Warning: NaN({nan_count})/Inf({inf_count}) in root_displacement of {filename}. Skipping disp stats.")
+            else:
+                disp_count += abs_traj.shape[0]
+                disp_sum += np.sum(abs_traj, axis=0)
+                disp_sum_sq += np.sum(abs_traj**2, axis=0)
+
+        total_final_features = extract_features(motion, 0, total_frames)
+
+        if not np.isfinite(total_final_features).all():
+            nan_count = np.isnan(total_final_features).sum()
+            inf_count = np.isinf(total_final_features).sum()
+            print(f"Warning: NaN({nan_count})/Inf({inf_count}) in final_features of {filename}. Skipping final stats.")
         else:
-            local_count += final_features.shape[0]
-            local_sum += np.sum(final_features, axis=0)
-            local_sum_sq += np.sum(final_features**2, axis=0)
-    
+            final_count += total_final_features.shape[0]
+            final_sum += np.sum(total_final_features, axis=0)
+            final_sum_sq += np.sum(total_final_features**2, axis=0)
+
         clip_filename = f"clip_{idx:04d}.npz"
         clip_filepath = os.path.join(output_processed_dir, clip_filename)
             
         np.savez_compressed(
             clip_filepath,
-            features=final_features.astype(np.float32),
+            features=total_final_features.astype(np.float32),
         )
         
+        # Metadata
         clip_info.append({
             "path": clip_filename,
             "length": int(total_frames),  # 항상 고정
@@ -187,7 +248,7 @@ def process_single_file(idx, filename, class_name, class_name_idx, class_type, c
         print(f"Error in {filename}: {e}")
         traceback.print_exc()
 
-    return local_count, local_sum, local_sum_sq, clip_info
+    return final_count, final_sum, final_sum_sq, disp_count, disp_sum, disp_sum_sq, clip_info
 
 # --- 3. 전처리 메인 로직 ---
 
@@ -225,29 +286,45 @@ def main():
         results.append(result)
 
     # 결과 취합 (병렬 반환값 모아서 통계 계산)
-    total_count = 0
-    total_sum = np.zeros(feature_dim)
-    total_sum_sq = np.zeros(feature_dim)
+    total_final_count = 0
+    total_final_sum = np.zeros(feature_dim)
+    total_final_sum_sq = np.zeros(feature_dim)
+
+    total_disp_count = 0
+    total_disp_sum = np.zeros(ROOT_DISP_DIM)
+    total_disp_sum_sq = np.zeros(ROOT_DISP_DIM)
     all_motion_clips = []
 
-    for local_count, local_sum, local_sum_sq, clip_info in results:
-        total_count += local_count
-        total_sum += local_sum
-        total_sum_sq += local_sum_sq
+    for final_count, final_sum, final_sum_sq, disp_count, disp_sum, disp_sum_sq, clip_info in results:
+        total_final_count += final_count
+        total_final_sum += final_sum
+        total_final_sum_sq += final_sum_sq
+
+        total_disp_count += disp_count
+        total_disp_sum += disp_sum
+        total_disp_sum_sq += disp_sum_sq
         if clip_info:
             all_motion_clips.append(clip_info)
 
     print("Calculating mean and std for the entire dataset...")
-    if total_count == 0:
-        raise ValueError("No valid data processed for stats.")
+    if total_final_count == 0:
+        raise ValueError("No valid data processed for final feature stats.")
     
-    mean = total_sum / total_count
-    variance = (total_sum_sq / total_count) - (mean ** 2)
+    mean = total_final_sum / total_final_count
+    variance = (total_final_sum_sq / total_final_count) - (mean ** 2)
     variance = np.maximum(variance, 0)
     std = np.sqrt(variance)
 
-    root_vel_mean = mean[:4]
-    root_vel_std = std[:4]
+    if total_disp_count == 0:
+        raise ValueError("No valid data processed for root displacement stats.")
+
+    disp_mean = total_disp_sum / total_disp_count
+    disp_variance = (total_disp_sum_sq / total_disp_count) - (disp_mean ** 2)
+    disp_variance = np.maximum(disp_variance, 0)
+    disp_std = np.sqrt(disp_variance)
+
+    root_pos_mean = mean[0:4]
+    root_pos_std = std[0:4]
     position_mean = mean[4:70]
     position_std = std[4:70]
     rotation_mean = mean[70:208]
@@ -255,14 +332,16 @@ def main():
     foot_mean = mean[208:210]
     foot_std = std[208:210]
 
-    np.save(os.path.join(output_processed_dir, "root_vel_mean.npy"), root_vel_mean)
-    np.save(os.path.join(output_processed_dir, "root_vel_std.npy"), root_vel_std)
+    np.save(os.path.join(output_processed_dir, "root_vel_mean.npy"), root_pos_mean)
+    np.save(os.path.join(output_processed_dir, "root_vel_std.npy"), root_pos_std)
     np.save(os.path.join(output_processed_dir, "position_mean.npy"), position_mean)
     np.save(os.path.join(output_processed_dir, "position_std.npy"), position_std)
     np.save(os.path.join(output_processed_dir, "rotation_mean.npy"), rotation_mean)
     np.save(os.path.join(output_processed_dir, "rotation_std.npy"), rotation_std)
     np.save(os.path.join(output_processed_dir, "foot_mean.npy"), foot_mean)
     np.save(os.path.join(output_processed_dir, "foot_std.npy"), foot_std)
+    np.save(os.path.join(output_processed_dir, "root_traj_mean.npy"), disp_mean)
+    np.save(os.path.join(output_processed_dir, "root_traj_std.npy"), disp_std)
         
     # 최종 메타데이터 파일 저장
     with open(output_metadata_path, 'w') as f:

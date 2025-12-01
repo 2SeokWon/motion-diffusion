@@ -9,7 +9,7 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
+import datetime
 
 def wrap_angle(a):
     """Wrap angle to [-π, π]"""
@@ -86,8 +86,11 @@ def main():
     parser.add_argument("--dpi", type=int, default=150)
     args = parser.parse_args()
 
-    os.makedirs(args.out_dir, exist_ok=True)
-
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    output_dir = f"./traj_comparison/generated_{timestamp}"
+    
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Output directory: {output_dir}")
     # Load trajectories
     print(f"Loading condition trajectory from: {args.condition}")
     cond_traj = load_traj(args.condition)
@@ -142,7 +145,7 @@ def main():
     ax1.set_aspect('equal', adjustable='box')
     
     fig1.tight_layout()
-    out_traj_png = os.path.join(args.out_dir, "trajectory_comparison.png")
+    out_traj_png = os.path.join(output_dir, "trajectory_comparison.png")
     fig1.savefig(out_traj_png)
     plt.close(fig1)
     print(f"Saved: {out_traj_png}")
@@ -162,7 +165,7 @@ def main():
     ax2.legend(fontsize=11)
     
     fig2.tight_layout()
-    out_pos_error = os.path.join(args.out_dir, "position_error.png")
+    out_pos_error = os.path.join(output_dir, "position_error.png")
     fig2.savefig(out_pos_error)
     plt.close(fig2)
     print(f"Saved: {out_pos_error}")
@@ -183,7 +186,7 @@ def main():
     ax3.legend(fontsize=11)
     
     fig3.tight_layout()
-    out_yaw_error = os.path.join(args.out_dir, "heading_error.png")
+    out_yaw_error = os.path.join(output_dir, "heading_error.png")
     fig3.savefig(out_yaw_error)
     plt.close(fig3)
     print(f"Saved: {out_yaw_error}")
@@ -197,12 +200,12 @@ def main():
         "Heading_MAE_deg": metrics["Heading_MAE_deg"]
     }
     
-    out_json = os.path.join(args.out_dir, "metrics.json")
+    out_json = os.path.join(output_dir, "metrics.json")
     with open(out_json, 'w') as f:
         json.dump(metrics_out, f, indent=2)
     print(f"Saved: {out_json}")
 
-    print(f"\n✅ All results saved to: {args.out_dir}")
+    print(f"\n✅ All results saved to: {output_dir}")
 
 
 if __name__ == "__main__":

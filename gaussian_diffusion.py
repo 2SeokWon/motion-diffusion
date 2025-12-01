@@ -409,8 +409,8 @@ class GaussianDiffusion(nn.Module):
     def training_losses_cond(self, model, x_start, t, cond, cond_drop_prob: float = 0.1, model_kwargs=None):
         """
         cond를 별도 입력으로 쓰는 학습 손실(= 표준 DDPM + 간단 CFG 드롭).
-        x_start: [B,T,210] (정규화)
-        cond:    [B,T,3]   (정규화된 vx,vz,yaw_rate)
+        x_start: [B,T,213] (정규화)
+        cond:    [B,15]    (정규화된 앵커 벡터)
         """
 
         if model_kwargs is None:
@@ -433,18 +433,19 @@ class GaussianDiffusion(nn.Module):
             loss_root = F.mse_loss(model_output[:,:,:4], target[:,:,:4])
             loss_joint = F.mse_loss(model_output[:,:,4:208], target[:,:,4:208])
             loss_foot = F.mse_loss(model_output[:,:,208:210], target[:,:,208:210])
-        
+            loss_traj = F.mse_loss(model_output[:,:,210:213], target[:,:,210:213])
         return {
             'loss': loss,
             'loss_root': loss_root.detach(),
             'loss_joint': loss_joint.detach(),
             'loss_foot': loss_foot.detach(),
+            'loss_traj': loss_traj.detach(),
         }
 
-    def p_sample_loop_cond(self, model, shape, cond, guidance_scale: float = 3.0, model_kwargs=None):
+    def p_sample_loop_cond(self, model, shape, cond, guidance_scale: float = 1.0, model_kwargs=None):
         """
         cond + CFG를 쓰는 샘플러. inpaint 불필요.
-        shape: (B,T,210), cond: [B,T,3] (정규화)
+        shape: (B,T,213), cond: (B, T, 7)
         """
 
         if model_kwargs is None:
