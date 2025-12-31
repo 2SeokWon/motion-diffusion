@@ -21,7 +21,20 @@ def load_traj(path):
     arr = torch.load(path, map_location="cpu")
     if isinstance(arr, torch.Tensor):
         arr = arr.numpy()
-    return np.asarray(arr, dtype=np.float32)
+    arr = np.asarray(arr, dtype=np.float32)
+
+    # 허용 포맷:
+    # - [T,3]: x,z,yaw 그대로 사용
+    # - [T,4]: x,y,z,yaw 형태라면 x,z,yaw만 추출
+    # - [T,>4]: 첫 컬럼 x, z는 두 번째/세 번째, yaw는 마지막 컬럼으로 가정
+    if arr.ndim != 2 or arr.shape[1] < 3:
+        raise ValueError(f"Trajectory tensor must be [T,3+] shape, got {arr.shape}")
+    if arr.shape[1] == 3:
+        return arr
+    if arr.shape[1] == 4:
+        return arr[:, [0, 2, 3]]
+    # arr.shape[1] > 4
+    return arr[:, [0, 2, -1]]
 
 
 def compute_metrics(condition_traj, generated_traj):
@@ -126,12 +139,6 @@ def main():
                s=150, c='blue', marker='s', label='End (Cond)', zorder=10, edgecolors='black')
     ax1.scatter(gen_traj[-1, 0], gen_traj[-1, 1], 
                s=150, c='red', marker='x', linewidths=3, label='End (Gen)', zorder=10)
-    
-    # Heading arrows
-    draw_heading_arrows(ax1, cond_traj, step=args.arrow_step, 
-                       scale=2.0, color='blue', alpha=0.5)
-    draw_heading_arrows(ax1, gen_traj, step=args.arrow_step, 
-                       scale=2.0, color='red', alpha=0.5)
     
     # Styling
     ax1.set_xlabel('X (m)', fontsize=12)

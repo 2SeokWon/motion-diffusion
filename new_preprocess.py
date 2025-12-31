@@ -11,9 +11,8 @@ import torch.nn.functional as F
 import traceback
 from bvh_viewer.BVH_Parser import bvh_parser, get_preorder_joint_list
 
-# --- 1. 설정 (Configuration) ---
 bvh_folder_path = "./dataset/"
-output_processed_dir = "./processed_data_position_1125/"
+output_processed_dir = "./processed_data_interp30_1226/"
 template_bvh_path = "./dataset/Aeroplane_BR.bvh" 
 output_metadata_path = os.path.join(output_processed_dir, "metadata.json")
 os.makedirs(output_processed_dir, exist_ok=True)
@@ -175,6 +174,47 @@ def tensor_to_motion_object_root(generated_tensor: np.ndarray) -> np.ndarray:
         traj[:, 2] = np.unwrap(traj[:, 2], period=2 * math.pi)
     return traj
 
+def moving_average_path(raw_pos_xz, raw_yaw, radius=30):
+    T = raw_pos_xz.shape[0]
+    win = 2 * radius + 1
+    pad_mode = "edge"
+
+    pad_x = np.pad(raw_pos_xz[:, 0], radius, mode=pad_mode)
+    pad_z = np.pad(raw_pos_xz[:, 1], radius, mode=pad_mode)
+    pad_yaw = np.pad(np.unwrap(raw_yaw), radius, mode=pad_mode)
+
+    csum_x = np.cumsum(np.insert(pad_x, 0, 0, axis=0), dtype=np.float64)
+    csum_z = np.cumsum(np.insert(pad_z, 0, 0, axis=0), dtype=np.float64)
+    csum_yaw = np.cumsum(np.insert(pad_yaw, 0, 0, axis=0), dtype=np.float64)
+
+    interp_x = (csum_x[win:] - csum_x[:-win]) / win  # 길이 T
+    interp_z = (csum_z[win:] - csum_z[:-win]) / win
+    interp_yaw = (csum_yaw[win:] - csum_yaw[:-win]) / win
+    interp_yaw = (interp_yaw + np.pi) % (2 * np.pi) - np.pi  # wrap
+
+    interp_pos_xz = np.stack([interp_x, interp_z], axis=1)
+    interp_feat = np.concatenate([interp_pos_xz, interp_yaw[:, np.newaxis]], axis=1)
+    return interp_feat
+
+def compute_delta_traj(raw_pos_xz: np.ndarray, raw_yaw: np.ndarray,
+                       interp_pos_xz: np.ndarray, interp_yaw: np.ndarray):
+    """
+    보간 궤적/heading 대비 잔차(delta_x, delta_z, delta_yaw)를 계산합니다.
+    - raw_pos_xz, raw_yaw: 원본 월드 좌표 궤적과 yaw (unwrap 권장)
+    - interp_pos_xz, interp_yaw: 보간된 궤적과 yaw
+    return: delta_xz (T,2), delta_yaw (T,)
+    """
+    delta_world = raw_pos_xz - interp_pos_xz
+    cos_t = np.cos(-interp_yaw)
+    sin_t = np.sin(-interp_yaw)
+    delta_x = delta_world[:, 0] * cos_t - delta_world[:, 1] * sin_t
+    delta_z = delta_world[:, 0] * sin_t + delta_world[:, 1] * cos_t
+    delta_yaw = np.unwrap(raw_yaw - interp_yaw)
+
+    delta_xz = np.stack([delta_x, delta_z], axis=1)
+    delta_feat = np.concatenate([delta_xz, delta_yaw[:, np.newaxis]], axis=1)
+    return delta_feat
+
 def process_single_file(idx, filename, class_name, class_name_idx, class_type, class_type_idx, feature_dim):
     filepath = os.path.join(bvh_folder_path, filename)
     # stats for final_features (full-length only)
@@ -183,9 +223,13 @@ def process_single_file(idx, filename, class_name, class_name_idx, class_type, c
     final_sum_sq = np.zeros(feature_dim)
 
     # stats for root_displacement (sampled with STRIDE)
-    disp_count = 0
-    disp_sum = np.zeros(ROOT_DISP_DIM)
-    disp_sum_sq = np.zeros(ROOT_DISP_DIM)
+    interp_count = 0
+    interp_sum = np.zeros(ROOT_DISP_DIM)
+    interp_sum_sq = np.zeros(ROOT_DISP_DIM)
+
+    delta_count = 0
+    delta_sum = np.zeros(ROOT_DISP_DIM)
+    delta_sum_sq = np.zeros(ROOT_DISP_DIM)
 
     clip_info = []  # npz 저장용
 
@@ -205,14 +249,29 @@ def process_single_file(idx, filename, class_name, class_name_idx, class_type, c
                 break
             features_seg = extract_features(motion, start_frame, CLIP_LENGTH)
             abs_traj = tensor_to_motion_object_root(features_seg)
-            if not np.isfinite(abs_traj).all():
-                nan_count = np.isnan(abs_traj).sum()
-                inf_count = np.isinf(abs_traj).sum()
+            interp_feat = moving_average_path(abs_traj[:, :2], abs_traj[:, 2], radius=30) #condition, root
+            delta_feat = compute_delta_traj(
+                abs_traj[:, :2], abs_traj[:, 2],
+                interp_feat[:, :2], interp_feat[:, 2]
+            )
+            
+            if not np.isfinite(interp_feat).all():
+                nan_count = np.isnan(interp_feat).sum()
+                inf_count = np.isinf(interp_feat).sum()
                 print(f"Warning: NaN({nan_count})/Inf({inf_count}) in root_displacement of {filename}. Skipping disp stats.")
             else:
-                disp_count += abs_traj.shape[0]
-                disp_sum += np.sum(abs_traj, axis=0)
-                disp_sum_sq += np.sum(abs_traj**2, axis=0)
+                interp_count += interp_feat.shape[0]
+                interp_sum += np.sum(interp_feat, axis=0)
+                interp_sum_sq += np.sum(interp_feat**2, axis=0)
+            
+            if not np.isfinite(delta_feat).all():
+                nan_count = np.isnan(delta_feat).sum()
+                inf_count = np.isinf(delta_feat).sum()
+                print(f"Warning: NaN({nan_count})/Inf({inf_count}) in delta_displacement of {filename}. Skipping delta disp stats.")
+            else:
+                delta_count += delta_feat.shape[0]
+                delta_sum += np.sum(delta_feat, axis=0)
+                delta_sum_sq += np.sum(delta_feat**2, axis=0)
 
         total_final_features = extract_features(motion, 0, total_frames)
 
@@ -248,7 +307,7 @@ def process_single_file(idx, filename, class_name, class_name_idx, class_type, c
         print(f"Error in {filename}: {e}")
         traceback.print_exc()
 
-    return final_count, final_sum, final_sum_sq, disp_count, disp_sum, disp_sum_sq, clip_info
+    return final_count, final_sum, final_sum_sq, interp_count, interp_sum, interp_sum_sq, delta_count, delta_sum, delta_sum_sq, clip_info
 
 # --- 3. 전처리 메인 로직 ---
 
@@ -290,19 +349,28 @@ def main():
     total_final_sum = np.zeros(feature_dim)
     total_final_sum_sq = np.zeros(feature_dim)
 
-    total_disp_count = 0
-    total_disp_sum = np.zeros(ROOT_DISP_DIM)
-    total_disp_sum_sq = np.zeros(ROOT_DISP_DIM)
+    total_interp_count = 0
+    total_interp_sum = np.zeros(ROOT_DISP_DIM)
+    total_interp_sum_sq = np.zeros(ROOT_DISP_DIM)
+    
+    total_delta_count = 0
+    total_delta_sum = np.zeros(ROOT_DISP_DIM)
+    total_delta_sum_sq = np.zeros(ROOT_DISP_DIM)
+    
     all_motion_clips = []
 
-    for final_count, final_sum, final_sum_sq, disp_count, disp_sum, disp_sum_sq, clip_info in results:
+    for final_count, final_sum, final_sum_sq, interp_count, interp_sum, interp_sum_sq, delta_count, delta_sum, delta_sum_sq, clip_info in results:
         total_final_count += final_count
         total_final_sum += final_sum
         total_final_sum_sq += final_sum_sq
 
-        total_disp_count += disp_count
-        total_disp_sum += disp_sum
-        total_disp_sum_sq += disp_sum_sq
+        total_interp_count += interp_count
+        total_interp_sum += interp_sum
+        total_interp_sum_sq += interp_sum_sq
+        
+        total_delta_count += delta_count
+        total_delta_sum += delta_sum
+        total_delta_sum_sq += delta_sum_sq
         if clip_info:
             all_motion_clips.append(clip_info)
 
@@ -315,15 +383,23 @@ def main():
     variance = np.maximum(variance, 0)
     std = np.sqrt(variance)
 
-    if total_disp_count == 0:
-        raise ValueError("No valid data processed for root displacement stats.")
+    if total_interp_count == 0:
+        raise ValueError("No valid data processed for interp stats.")
 
-    disp_mean = total_disp_sum / total_disp_count
-    disp_variance = (total_disp_sum_sq / total_disp_count) - (disp_mean ** 2)
-    disp_variance = np.maximum(disp_variance, 0)
-    disp_std = np.sqrt(disp_variance)
+    interp_mean = total_interp_sum / total_interp_count
+    interp_variance = (total_interp_sum_sq / total_interp_count) - (interp_mean ** 2)
+    interp_variance = np.maximum(interp_variance, 0)
+    interp_std = np.sqrt(interp_variance)
 
-    root_pos_mean = mean[0:4]
+    if total_delta_count == 0:
+        raise ValueError("No valid data processed for delta stats.")
+    
+    delta_mean = total_delta_sum / total_delta_count
+    delta_variance = (total_delta_sum_sq / total_delta_count) - (delta_mean ** 2)
+    delta_variance = np.maximum(delta_variance, 0)
+    delta_std = np.sqrt(delta_variance)
+
+    root_pos_mean = mean[0:4] #height, xz_vel, y_ang_vel
     root_pos_std = std[0:4]
     position_mean = mean[4:70]
     position_std = std[4:70]
@@ -332,16 +408,18 @@ def main():
     foot_mean = mean[208:210]
     foot_std = std[208:210]
 
-    np.save(os.path.join(output_processed_dir, "root_vel_mean.npy"), root_pos_mean)
-    np.save(os.path.join(output_processed_dir, "root_vel_std.npy"), root_pos_std)
+    np.save(os.path.join(output_processed_dir, "root_pos_mean.npy"), root_pos_mean)
+    np.save(os.path.join(output_processed_dir, "root_pos_std.npy"), root_pos_std)
     np.save(os.path.join(output_processed_dir, "position_mean.npy"), position_mean)
     np.save(os.path.join(output_processed_dir, "position_std.npy"), position_std)
     np.save(os.path.join(output_processed_dir, "rotation_mean.npy"), rotation_mean)
     np.save(os.path.join(output_processed_dir, "rotation_std.npy"), rotation_std)
     np.save(os.path.join(output_processed_dir, "foot_mean.npy"), foot_mean)
     np.save(os.path.join(output_processed_dir, "foot_std.npy"), foot_std)
-    np.save(os.path.join(output_processed_dir, "root_traj_mean.npy"), disp_mean)
-    np.save(os.path.join(output_processed_dir, "root_traj_std.npy"), disp_std)
+    np.save(os.path.join(output_processed_dir, "interp_mean.npy"), interp_mean)
+    np.save(os.path.join(output_processed_dir, "interp_std.npy"), interp_std)
+    np.save(os.path.join(output_processed_dir, "delta_mean.npy"), delta_mean)
+    np.save(os.path.join(output_processed_dir, "delta_std.npy"), delta_std)
         
     # 최종 메타데이터 파일 저장
     with open(output_metadata_path, 'w') as f:

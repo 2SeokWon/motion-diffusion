@@ -119,8 +119,8 @@ def tensor_to_motion_object_traj(generated_tensor: np.ndarray, template_bvh_path
         frame_features = generated_tensor[i]
         
         root_y_height = frame_features[0]
-        root_xz_position_world = frame_features[210:212]  # world displacement anchored at origin
-        root_yaw = frame_features[212]  # absolute yaw (can be unwrapped)
+        root_xz_position_world = frame_features[1:3]  # world displacement anchored at origin
+        root_yaw = frame_features[3]  # absolute yaw (can be unwrapped)
         all_joint_6d = frame_features[sixd_start:sixd_start + sixd_dim].reshape(-1, 6)
 
         # 1. 6D를 쿼터니언으로 미리 변환

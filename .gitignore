@@ -8,12 +8,7 @@ results/
 Miniconda3-latest-Linux-x86_64.sh
 __pycache__
 wandb/
-processed_data_cond/
-processed_data_traj/
-processed_data_traj_*/
-processed_data_cond_foot/
-processed_data_global_traj/
-processed_data_root7/
+processed_data_*/
 traj_code_1111/
 traj_comparison/
 traj_from_template/

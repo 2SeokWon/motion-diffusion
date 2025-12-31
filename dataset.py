@@ -7,7 +7,7 @@ import torch
 import math
 from torch.utils.data import Dataset
 import torch.nn.functional as F
-from new_preprocess import tensor_to_motion_object_root
+from new_preprocess import tensor_to_motion_object_root, moving_average_path, compute_delta_traj
 
 class MotionDataset(Dataset):
     def __init__(self, processed_data_path, seq_len=180, feat_bias=15.0):
@@ -27,8 +27,8 @@ class MotionDataset(Dataset):
         self.name_classes = sorted(set(clip_info['class_name'] for clip_info in self.metadata))
         self.num_name_classes = len(self.name_classes)
 
-        self.root_pos_mean = np.load(os.path.join(processed_data_path, "root_vel_mean.npy"))
-        self.root_pos_std = np.load(os.path.join(processed_data_path, "root_vel_std.npy"))
+        self.root_pos_mean = np.load(os.path.join(processed_data_path, "root_pos_mean.npy"))
+        self.root_pos_std = np.load(os.path.join(processed_data_path, "root_pos_std.npy"))
         self.root_pos_std = np.maximum(self.root_pos_std / feat_bias, 1e-8)
 
         self.position_mean = np.load(os.path.join(processed_data_path, "position_mean.npy"))
@@ -43,9 +43,13 @@ class MotionDataset(Dataset):
         foot_std = np.load(os.path.join(processed_data_path, "foot_std.npy"))
         self.foot_std = np.ones_like(foot_std)
 
-        self.displacement_mean = np.load(os.path.join(processed_data_path, "root_traj_mean.npy"))
-        self.displacement_std = np.load(os.path.join(processed_data_path, "root_traj_std.npy"))
-        self.displacement_std = np.maximum(self.displacement_std / self.feat_bias, 1e-8)
+        self.interp_mean = np.load(os.path.join(processed_data_path, "interp_mean.npy"))
+        self.interp_std = np.load(os.path.join(processed_data_path, "interp_std.npy"))
+        self.interp_std = np.maximum(self.interp_std / self.feat_bias, 1e-8)
+
+        self.delta_mean = np.load(os.path.join(processed_data_path, "delta_mean.npy"))
+        self.delta_std = np.load(os.path.join(processed_data_path, "delta_std.npy"))
+        self.delta_std = np.maximum(self.delta_std / self.feat_bias, 1e-8)
 
         # 2. 가중 샘플링을 위한 준비
         #    - 각 클립의 길이가 SEQ_LEN보다 짧으면 제외
@@ -91,15 +95,21 @@ class MotionDataset(Dataset):
         features = clip_data[start_frame:end_frame].copy()      # [180, 210]
 
         abs_traj = tensor_to_motion_object_root(features)  # [180,3]
+        interp_feat = moving_average_path(abs_traj[:, :2], abs_traj[:, 2], radius=30)
+        delta_feat = compute_delta_traj(
+            abs_traj[:, :2], abs_traj[:, 2],
+            interp_feat[:, :2], interp_feat[:, 2]
+        )
 
         # Normalize motion features
-        root_vel_part = (features[:, :4] - self.root_pos_mean) / self.root_pos_std
-        position_part = (features[:, 4:70] - self.position_mean) / self.position_std
-        rotation_part = (features[:, 70:208] - self.rotation_mean) / self.rotation_std 
-        foot_part = (features[:, 208:210] - self.foot_mean) / self.foot_std
-        cond_traj = (abs_traj - self.displacement_mean) / self.displacement_std 
+        root_hip_part = (features[:, 0] - self.root_pos_mean[0]) / self.root_pos_std[0] # [180,]
+        root_delta_part = (delta_feat - self.delta_mean) / self.delta_std # [180,3]
+        position_part = (features[:, 4:70] - self.position_mean) / self.position_std # [180,66]
+        rotation_part = (features[:, 70:208] - self.rotation_mean) / self.rotation_std  # [180,138]
+        foot_part = (features[:, 208:210] - self.foot_mean) / self.foot_std # [180,2]
+        cond_part = (interp_feat - self.interp_mean) / self.interp_std # [180,3]
 
-        normalized_segment = np.concatenate([root_vel_part, position_part, rotation_part, foot_part, cond_traj], axis=1) #213
+        normalized_segment = np.concatenate([root_hip_part[:, np.newaxis], root_delta_part, position_part, rotation_part, foot_part, cond_part], axis=1) #213
         
         motion_tensor = torch.from_numpy(normalized_segment).float() # [seq_len, 213]
         label_one_hot_name = F.one_hot(torch.tensor(class_name_idx), num_classes=self.num_name_classes).float()

@@ -99,7 +99,7 @@ class MotionTransformer(nn.Module):
         )
 
         self.cond_proj = nn.Sequential(
-            nn.Linear(7, latent_dim),
+            nn.Linear(3, latent_dim),
             nn.SiLU(),
             nn.Linear(latent_dim, latent_dim),
         )
