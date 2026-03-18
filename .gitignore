@@ -20,3 +20,10 @@ processed_data_detrend_*/
 processed_data_position_*/
 processed_data_velocity_*/
 preprocess_detrend.py
+
+# Data, outputs, and local tooling
+data/
+docs/
+model/
+.claude/
+*.pyc
