@@ -12,7 +12,7 @@ from joblib import Parallel, delayed
 from bvh_viewer.BVH_Parser import bvh_parser
 from core.motion_features import (
     CLIP_LENGTH, STRIDE, ROOT_DISP_DIM,
-    extract_features, tensor_to_motion_object_root, moving_average_path, compute_delta_traj,
+    extract_features, tensor_to_motion_object_root,
 )
 
 BVH_FOLDER_PATH = "./data/raw/"
@@ -28,13 +28,9 @@ def process_single_file(idx, filename, class_name, class_name_idx, class_type, c
     final_sum = np.zeros(feature_dim)
     final_sum_sq = np.zeros(feature_dim)
 
-    interp_count = 0
-    interp_sum = np.zeros(ROOT_DISP_DIM)
-    interp_sum_sq = np.zeros(ROOT_DISP_DIM)
-
-    delta_count = 0
-    delta_sum = np.zeros(ROOT_DISP_DIM)
-    delta_sum_sq = np.zeros(ROOT_DISP_DIM)
+    abs_count = 0
+    abs_sum = np.zeros(ROOT_DISP_DIM)
+    abs_sum_sq = np.zeros(ROOT_DISP_DIM)
 
     clip_info = []
 
@@ -51,30 +47,14 @@ def process_single_file(idx, filename, class_name, class_name_idx, class_type, c
             if start_frame + CLIP_LENGTH > total_frames:
                 break
             features_seg = extract_features(motion, start_frame, CLIP_LENGTH)
-            abs_traj = tensor_to_motion_object_root(features_seg)
-            interp_feat = moving_average_path(abs_traj[:, :2], abs_traj[:, 2], radius=30)
-            delta_feat = compute_delta_traj(
-                abs_traj[:, :2], abs_traj[:, 2],
-                interp_feat[:, :2], interp_feat[:, 2]
-            )
+            abs_traj = tensor_to_motion_object_root(features_seg)  # [T, 3]
 
-            if not np.isfinite(interp_feat).all():
-                nan_count = np.isnan(interp_feat).sum()
-                inf_count = np.isinf(interp_feat).sum()
-                print(f"Warning: NaN({nan_count})/Inf({inf_count}) in interp of {filename}. Skipping.")
+            if not np.isfinite(abs_traj).all():
+                print(f"Warning: NaN/Inf in abs_traj of {filename}. Skipping window.")
             else:
-                interp_count += interp_feat.shape[0]
-                interp_sum += np.sum(interp_feat, axis=0)
-                interp_sum_sq += np.sum(interp_feat ** 2, axis=0)
-
-            if not np.isfinite(delta_feat).all():
-                nan_count = np.isnan(delta_feat).sum()
-                inf_count = np.isinf(delta_feat).sum()
-                print(f"Warning: NaN({nan_count})/Inf({inf_count}) in delta of {filename}. Skipping.")
-            else:
-                delta_count += delta_feat.shape[0]
-                delta_sum += np.sum(delta_feat, axis=0)
-                delta_sum_sq += np.sum(delta_feat ** 2, axis=0)
+                abs_count += abs_traj.shape[0]
+                abs_sum += np.sum(abs_traj, axis=0)
+                abs_sum_sq += np.sum(abs_traj ** 2, axis=0)
 
         total_final_features = extract_features(motion, 0, total_frames)
 
@@ -107,7 +87,7 @@ def process_single_file(idx, filename, class_name, class_name_idx, class_type, c
         print(f"Error in {filename}: {e}")
         traceback.print_exc()
 
-    return final_count, final_sum, final_sum_sq, interp_count, interp_sum, interp_sum_sq, delta_count, delta_sum, delta_sum_sq, clip_info
+    return final_count, final_sum, final_sum_sq, abs_count, abs_sum, abs_sum_sq, clip_info
 
 
 def main():
@@ -140,34 +120,26 @@ def main():
     total_final_count = 0
     total_final_sum = np.zeros(feature_dim)
     total_final_sum_sq = np.zeros(feature_dim)
-    total_interp_count = 0
-    total_interp_sum = np.zeros(ROOT_DISP_DIM)
-    total_interp_sum_sq = np.zeros(ROOT_DISP_DIM)
-    total_delta_count = 0
-    total_delta_sum = np.zeros(ROOT_DISP_DIM)
-    total_delta_sum_sq = np.zeros(ROOT_DISP_DIM)
+    total_abs_count = 0
+    total_abs_sum = np.zeros(ROOT_DISP_DIM)
+    total_abs_sum_sq = np.zeros(ROOT_DISP_DIM)
     all_motion_clips = []
 
-    for final_count, final_sum, final_sum_sq, interp_count, interp_sum, interp_sum_sq, delta_count, delta_sum, delta_sum_sq, clip_info in results:
+    for final_count, final_sum, final_sum_sq, abs_count, abs_sum, abs_sum_sq, clip_info in results:
         total_final_count += final_count
         total_final_sum += final_sum
         total_final_sum_sq += final_sum_sq
-        total_interp_count += interp_count
-        total_interp_sum += interp_sum
-        total_interp_sum_sq += interp_sum_sq
-        total_delta_count += delta_count
-        total_delta_sum += delta_sum
-        total_delta_sum_sq += delta_sum_sq
+        total_abs_count += abs_count
+        total_abs_sum += abs_sum
+        total_abs_sum_sq += abs_sum_sq
         if clip_info:
             all_motion_clips.append(clip_info)
 
     print("Calculating mean and std for the entire dataset...")
     if total_final_count == 0:
         raise ValueError("No valid data processed for final feature stats.")
-    if total_interp_count == 0:
-        raise ValueError("No valid data processed for interp stats.")
-    if total_delta_count == 0:
-        raise ValueError("No valid data processed for delta stats.")
+    if total_abs_count == 0:
+        raise ValueError("No valid data processed for abs_traj stats.")
 
     def calc_mean_std(total_sum, total_sum_sq, count):
         mean = total_sum / count
@@ -175,8 +147,7 @@ def main():
         return mean, np.sqrt(variance)
 
     mean, std = calc_mean_std(total_final_sum, total_final_sum_sq, total_final_count)
-    interp_mean, interp_std = calc_mean_std(total_interp_sum, total_interp_sum_sq, total_interp_count)
-    delta_mean, delta_std = calc_mean_std(total_delta_sum, total_delta_sum_sq, total_delta_count)
+    abs_mean, abs_std = calc_mean_std(total_abs_sum, total_abs_sum_sq, total_abs_count)
 
     out = OUTPUT_PROCESSED_DIR
     np.save(os.path.join(out, "root_pos_mean.npy"), mean[0:4])
@@ -187,10 +158,8 @@ def main():
     np.save(os.path.join(out, "rotation_std.npy"),  std[70:208])
     np.save(os.path.join(out, "foot_mean.npy"),     mean[208:210])
     np.save(os.path.join(out, "foot_std.npy"),      std[208:210])
-    np.save(os.path.join(out, "interp_mean.npy"),   interp_mean)
-    np.save(os.path.join(out, "interp_std.npy"),    interp_std)
-    np.save(os.path.join(out, "delta_mean.npy"),    delta_mean)
-    np.save(os.path.join(out, "delta_std.npy"),     delta_std)
+    np.save(os.path.join(out, "abs_traj_mean.npy"), abs_mean)
+    np.save(os.path.join(out, "abs_traj_std.npy"),  abs_std)
 
     with open(OUTPUT_METADATA_PATH, 'w') as f:
         json.dump(all_motion_clips, f, indent=4)
