@@ -1,0 +1,42 @@
+data:
+  raw_dir:       ./data/raw
+  processed_dir: ./data/processed
+  control_dir:   ./data/control
+
+model:
+  njoints:            23
+  seq_len:            180
+  latent_dim:         1024
+  ff_size:            4096
+  num_layers:         8
+  num_heads:          8
+  dropout:            0.1
+  # Feature dims per joint
+  root_features:      4   # hip Y(1) + delta xz yaw(3)
+  position_features:  3   # local position per joint
+  rotation_features:  6   # 6D rotation per joint
+  foot_features:      2   # RightToe, LeftToe contact
+  cond_features:      3   # interpolated traj (x, z, yaw)
+
+diffusion:
+  num_timesteps: 1000
+  beta_start:    0.0001
+  beta_end:      0.02
+
+training:
+  seed:            42
+  num_epochs:      500
+  batch_size:      64
+  num_workers:     16
+  learning_rate:   1e-4
+  weight_decay:    0.05
+  lr_anneal_steps: 500000
+  save_interval:   5      # epochs between checkpoints
+  mask_prob:       0.1    # classifier-free guidance drop probability
+  feat_bias:       15.0   # scale divisor for position/traj std
+  checkpoint_dir:  ./checkpoints
+
+generation:
+  guidance_scale:    3.0
+  skeleton_template: ./data/raw/Aeroplane_BR.bvh
+  output_dir:        ./results
