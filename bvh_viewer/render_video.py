@@ -13,13 +13,10 @@ import pygame
 from OpenGL.GL import *
 from OpenGL.GLU import *
 
-# --- 사용자님의 기존 모듈 임포트 ---
-# 이 스크립트를 프로젝트 최상위 폴더에서 실행하거나,
-# bvh_tools 폴더 등이 있는 경로를 sys.path에 추가해야 할 수 있습니다.
-# 예: sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+#sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from .BVH_Parser import bvh_parser, Motion, MotionFrame, Joint, get_preorder_joint_list
 from .Rendering import draw_humanoid, draw_virtual_root_axis
-from kinematics import sixd_to_rotation_matrix
+from core.kinematics import sixd_to_rotation_matrix
 from .utils import draw_axes, set_lights
 
 # ----------------- 설정 -----------------
