@@ -119,8 +119,8 @@ def main():
     
     print(f"\n=== Trajectory Metrics ===")
     print(f"Frames: {metrics['T']}")
-    print(f"ADE: {metrics['ADE']:.3f} m")
-    print(f"FDE: {metrics['FDE']:.3f} m")
+    print(f"ADE: {metrics['ADE']:.3f} cm")  # BVH 데이터 단위가 cm (값 변환 없음)
+    print(f"FDE: {metrics['FDE']:.3f} cm")
     print(f"Heading MAE: {metrics['Heading_MAE_deg']:.2f}°")
 
     # ===== Plot 1: XZ Trajectory =====
@@ -141,10 +141,10 @@ def main():
                s=150, c='red', marker='x', linewidths=3, label='End (Gen)', zorder=10)
     
     # Styling
-    ax1.set_xlabel('X (m)', fontsize=12)
-    ax1.set_ylabel('Z (m)', fontsize=12)
+    ax1.set_xlabel('X (cm)', fontsize=12)
+    ax1.set_ylabel('Z (cm)', fontsize=12)
     ax1.set_title(f'Trajectory Comparison\n'
-                  f'ADE: {metrics["ADE"]:.3f}m | FDE: {metrics["FDE"]:.3f}m | '
+                  f'ADE: {metrics["ADE"]:.3f}cm | FDE: {metrics["FDE"]:.3f}cm | '
                   f'Heading MAE: {metrics["Heading_MAE_deg"]:.2f}°',
                   fontsize=14, fontweight='bold')
     ax1.grid(True, alpha=0.3, linestyle='--')
@@ -163,10 +163,10 @@ def main():
     frames = np.arange(metrics['T'])
     ax2.plot(frames, metrics['pos_error'], 'r-', linewidth=2)
     ax2.axhline(metrics['ADE'], color='b', linestyle='--', 
-               label=f'ADE: {metrics["ADE"]:.3f}m', linewidth=1.5)
+               label=f'ADE: {metrics["ADE"]:.3f}cm', linewidth=1.5)
     
     ax2.set_xlabel('Frame', fontsize=12)
-    ax2.set_ylabel('Position Error (m)', fontsize=12)
+    ax2.set_ylabel('Position Error (cm)', fontsize=12)
     ax2.set_title('Position Error over Time', fontsize=14, fontweight='bold')
     ax2.grid(True, alpha=0.3)
     ax2.legend(fontsize=11)
