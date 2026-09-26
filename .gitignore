@@ -27,3 +27,5 @@ docs/
 model/
 .claude/
 *.pyc
+graphify-out/
+imgui.ini

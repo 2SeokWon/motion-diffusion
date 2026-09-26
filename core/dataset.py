@@ -76,6 +76,9 @@ class MotionDataset(Dataset):
 
         clip_data = self.clip_cache[clip_path]
         features = clip_data[start_frame:start_frame + self.seq_len].copy()  # [180, 210]
+        # 창의 첫 프레임은 직전 프레임이 없으므로 root 속도/각속도를 0으로 둔다.
+        # (make_control.py, preprocess.py의 abs_traj 통계와 같은 규약 → 조건 궤적이 항상 원점에서 시작)
+        features[0, 1:4] = 0.0
 
         abs_traj = tensor_to_motion_object_root(features)  # [180, 3]
 
