@@ -72,6 +72,9 @@ def train():
         feat_bias=cfg.training.feat_bias,
         max_waypoints=cfg.waypoint.max_waypoints,
         dense_prob=cfg.waypoint.dense_prob,
+        split='train',
+        test_ratio=cfg.data.test_ratio,
+        stats_dir=cfg.data.stats_dir,
     )
     dataloader = DataLoader(
         dataset,

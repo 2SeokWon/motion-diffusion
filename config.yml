@@ -2,6 +2,8 @@ data:
   raw_dir:       ./data/raw
   processed_dir: ./data/processed
   control_dir:   ./data/control
+  stats_dir:     ./data/processed/stats_train   # 학습 구간만으로 계산한 정규화 통계 (scripts/split_stats.py)
+  test_ratio:    0.15                           # 각 파일의 뒤 15%는 평가용 (학습 창과 겹치지 않음)
 
 model:
   njoints:            23

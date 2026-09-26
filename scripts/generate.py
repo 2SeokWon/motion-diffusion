@@ -79,7 +79,9 @@ def generate():
 
     # ─ 통계 로드 ─
     print("Loading dataset statistics...")
-    dataset     = MotionDataset(processed_data_path=cfg.data.processed_dir, seq_len=cfg.model.seq_len)
+    dataset     = MotionDataset(processed_data_path=cfg.data.processed_dir, seq_len=cfg.model.seq_len,
+                                feat_bias=cfg.training.feat_bias, split='test',
+                                test_ratio=cfg.data.test_ratio, stats_dir=cfg.data.stats_dir)  # 학습과 같은 통계
     class_names = dataset.name_classes
 
     full_mean = np.hstack([dataset.root_pos_mean,

@@ -9,13 +9,34 @@ from torch.utils.data import Dataset
 from .motion_features import tensor_to_motion_object_root
 
 
+def split_range(length, split, test_ratio):
+    """
+    한 클립에서 split에 해당하는 프레임 범위 [lo, hi).
+    각 파일의 앞부분은 학습, 뒤 test_ratio는 평가용이다. 창은 이 범위 안에서만 뽑으므로
+    학습 창과 평가 창은 한 프레임도 겹치지 않는다.
+    """
+    n_test = int(round(length * test_ratio))
+    if split == 'train':
+        return 0, length - n_test
+    if split == 'test':
+        return length - n_test, length
+    if split == 'all':
+        return 0, length
+    raise ValueError(f"Unknown split: {split}")
+
+
 class MotionDataset(Dataset):
-    def __init__(self, processed_data_path, seq_len=180, feat_bias=15.0, max_waypoints=10, dense_prob=0.1):
+    def __init__(self, processed_data_path, seq_len=180, feat_bias=15.0, max_waypoints=10, dense_prob=0.1,
+                 split='train', test_ratio=0.15, stats_dir=None):
         self.processed_data_path = processed_data_path
         self.seq_len = seq_len
         self.feat_bias = feat_bias
         self.max_waypoints = max_waypoints #시작/도착 외 중간 경유점 최대 개수
         self.dense_prob = dense_prob #전체 궤적을 조건으로 주는 확률
+        self.split = split
+        self.test_ratio = test_ratio
+        # 정규화 통계는 학습 구간만으로 계산한 값을 쓴다 (scripts/split_stats.py). 없으면 전처리가 만든 전체 통계.
+        stats_dir = stats_dir or processed_data_path
         metadata_path = os.path.join(processed_data_path, "metadata.json")
 
         with open(metadata_path, 'r') as f:
@@ -29,38 +50,41 @@ class MotionDataset(Dataset):
         self.name_classes = sorted(set(clip_info['class_name'] for clip_info in self.metadata))
         self.num_name_classes = len(self.name_classes)
 
-        self.root_pos_mean = np.load(os.path.join(processed_data_path, "root_pos_mean.npy"))
-        self.root_pos_std = np.load(os.path.join(processed_data_path, "root_pos_std.npy"))
+        self.root_pos_mean = np.load(os.path.join(stats_dir, "root_pos_mean.npy"))
+        self.root_pos_std = np.load(os.path.join(stats_dir, "root_pos_std.npy"))
         self.root_pos_std = np.maximum(self.root_pos_std / feat_bias, 1e-8)
 
-        self.position_mean = np.load(os.path.join(processed_data_path, "position_mean.npy"))
-        self.position_std = np.load(os.path.join(processed_data_path, "position_std.npy"))
+        self.position_mean = np.load(os.path.join(stats_dir, "position_mean.npy"))
+        self.position_std = np.load(os.path.join(stats_dir, "position_std.npy"))
         # hip에 고정 offset으로 붙은 관절(Chest, RightHip, LeftHip)은 hip 기준 위치가 상수이다.
         # 반올림 오차(std≈4e-6)를 표준편차 1로 키우지 않도록, std가 매우 작으면 나누지 않는다(→ 정규화 후 ≈ 0).
         self.position_std = np.where(self.position_std < 1e-3, 1.0, self.position_std)
 
-        self.rotation_mean = np.load(os.path.join(processed_data_path, "rotation_mean.npy"))
-        self.rotation_std = np.load(os.path.join(processed_data_path, "rotation_std.npy"))
+        self.rotation_mean = np.load(os.path.join(stats_dir, "rotation_mean.npy"))
+        self.rotation_std = np.load(os.path.join(stats_dir, "rotation_std.npy"))
         self.rotation_std = np.maximum(self.rotation_std, 1e-8)
 
-        self.foot_mean = np.load(os.path.join(processed_data_path, "foot_mean.npy"))
-        foot_std = np.load(os.path.join(processed_data_path, "foot_std.npy"))
+        self.foot_mean = np.load(os.path.join(stats_dir, "foot_mean.npy"))
+        foot_std = np.load(os.path.join(stats_dir, "foot_std.npy"))
         self.foot_std = np.ones_like(foot_std)
 
-        self.abs_traj_mean = np.load(os.path.join(processed_data_path, "abs_traj_mean.npy"))
-        self.abs_traj_std = np.load(os.path.join(processed_data_path, "abs_traj_std.npy"))
+        self.abs_traj_mean = np.load(os.path.join(stats_dir, "abs_traj_mean.npy"))
+        self.abs_traj_std = np.load(os.path.join(stats_dir, "abs_traj_std.npy"))
         # 궤적은 노이즈를 섞는 생성 대상이 아니라 조건 입력이므로 feat_bias를 적용하지 않는다(표준정규화)
         self.abs_traj_std = np.maximum(self.abs_traj_std, 1e-8)
 
-        self.sampleable_clips = [c for c in self.metadata if c['length'] >= self.seq_len]
+        self.sampleable_clips = [
+            c for c in self.metadata
+            if np.diff(split_range(c['length'], split, test_ratio))[0] >= self.seq_len
+        ]
 
         self.index_map = []
         for clip_idx, clip_info in enumerate(self.sampleable_clips):
-            num_possible_clips = clip_info['length'] - self.seq_len + 1
-            for start_frame in range(num_possible_clips):
+            lo, hi = split_range(clip_info['length'], split, test_ratio)
+            for start_frame in range(lo, hi - self.seq_len + 1): #창 전체가 [lo, hi) 안에 있어야 한다
                 self.index_map.append((clip_idx, start_frame))
 
-        print(f"Total possible unique clips (virtual dataset size): {len(self.index_map)}")
+        print(f"[{split}] Total possible unique clips (virtual dataset size): {len(self.index_map)}")
 
         self.clip_cache = {}
         for clip_info in self.sampleable_clips:
