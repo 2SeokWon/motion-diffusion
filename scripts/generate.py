@@ -14,31 +14,18 @@ from core.model import MotionTransformer
 from core.gaussian_diffusion import GaussianDiffusion
 from core.dataset import MotionDataset
 from core.motion_features import tensor_to_motion_object_root
+from core.metrics import waypoint_metrics, foot_positions, foot_skating
 from core.utils import write_bvh
+from bvh_viewer.BVH_Parser import bvh_parser
 from bvh_viewer.render_video import render_movie, tensor_to_motion_object
 
 
-def wrap_angle(a):
-    return (a + np.pi) % (2 * np.pi) - np.pi
-
-
-def waypoint_metrics(gen_traj, gt_traj, mask):
-    """
-    생성 궤적이 경유점을 지났는지 채점한다. 단위: 위치 cm, 방향 deg.
-    시작 프레임은 항상 원점이라 제외한다.
-    full_path_ADE는 참고용: 경유점이 적으면 정답과 다른 길로 가는 것이 정상이다.
-    """
-    wp = np.flatnonzero(mask[:, 0])
-    wp = wp[wp != 0]
-    pos_err = np.linalg.norm(gen_traj[:, :2] - gt_traj[:, :2], axis=1)  # [T]
-    yaw_err = np.abs(wrap_angle(gen_traj[:, 2] - gt_traj[:, 2]))       # [T]
-    return {
-        'num_waypoints': int(len(wp)),  # 도착 포함, 시작 제외
-        'waypoint_pos_err_cm': float(pos_err[wp].mean()),
-        'goal_pos_err_cm': float(pos_err[-1]),
-        'waypoint_yaw_err_deg': float(np.degrees(yaw_err[wp].mean())),
-        'full_path_ADE_cm': float(pos_err.mean()),
-    }
+def gt_foot_skating(raw_dir, source_bvh, start_frame, num_frames):
+    """같은 구간의 원본 동작에서 잰 발 미끄러짐 (모션캡처 노이즈 수준의 기준값)."""
+    root, motion = bvh_parser(os.path.join(raw_dir, source_bvh))
+    motion.list_to_quaternion(root)
+    motion.save_virtual_root_info(root)
+    return foot_skating(foot_positions(motion, start_frame, num_frames))
 
 
 def generate():
@@ -144,15 +131,21 @@ def generate():
     gen_traj_abs = tensor_to_motion_object_root(generated)  # [T, 3]
     torch.save(torch.from_numpy(gen_traj_abs), os.path.join(output_dir, "generated_traj_abs.pt"))
 
+    root, motion_obj = tensor_to_motion_object(generated, cfg.generation.skeleton_template)
+
     metrics = waypoint_metrics(gen_traj_abs, gt_traj, mask)
+    metrics.update({f'gen_{k}': v for k, v in foot_skating(foot_positions(motion_obj)).items()})
+    if 'source_bvh' in wp:
+        gt = gt_foot_skating(cfg.data.raw_dir, wp['source_bvh'], wp['start_frame'], T)
+        metrics.update({f'gt_{k}': v for k, v in gt.items()})
     metrics.update({'class': class_name, 'guidance_scale': guidance_scale,
                     'cond_path': cond_path, 'checkpoint': args.checkpoint_path})
     with open(os.path.join(output_dir, "metrics.json"), 'w', encoding='utf-8') as f:
         json.dump(metrics, f, indent=2, ensure_ascii=False)
     print(f"Waypoint error {metrics['waypoint_pos_err_cm']:.2f} cm | Goal error {metrics['goal_pos_err_cm']:.2f} cm | "
           f"Waypoint yaw error {metrics['waypoint_yaw_err_deg']:.2f} deg | (ref) full-path ADE {metrics['full_path_ADE_cm']:.2f} cm")
-
-    root, motion_obj = tensor_to_motion_object(generated, cfg.generation.skeleton_template)
+    print(f"Foot skating ratio {metrics['gen_skating_ratio']:.3f}"
+          + (f" (GT {metrics['gt_skating_ratio']:.3f})" if 'gt_skating_ratio' in metrics else ""))
     write_bvh(root, motion_obj, os.path.join(output_dir, "sample.bvh"))
     render_movie(root, motion_obj, os.path.join(output_dir, "sample.mp4"))
 
