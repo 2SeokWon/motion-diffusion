@@ -16,7 +16,11 @@ model:
   position_features:  3   # local position per joint
   rotation_features:  6   # 6D rotation per joint
   foot_features:      2   # RightToe, LeftToe contact
-  cond_features:      3   # interpolated traj (x, z, yaw)
+  cond_features:      3   # waypoint traj (x, z, yaw), 모델 입력 조건 = 값 3 + 마스크 1
+
+waypoint:
+  max_waypoints: 10     # 시작/도착 외 중간 경유점 최대 개수 (0~max 랜덤)
+  dense_prob:    0.1    # 전체 궤적을 조건으로 주는 확률
 
 diffusion:
   num_timesteps: 1000
@@ -32,8 +36,10 @@ training:
   weight_decay:    0.05
   lr_anneal_steps: 500000
   save_interval:   5      # epochs between checkpoints
-  mask_prob:       0.1    # classifier-free guidance drop probability
-  feat_bias:       15.0   # scale divisor for position/traj std
+  class_drop:      0.1    # CFG: 클래스만 드롭하는 확률
+  cond_drop:       0.1    # CFG: 경유점 조건만 드롭하는 확률
+  joint_drop:      0.1    # CFG: 클래스 + 경유점 동시 드롭 확률 (샘플링의 uncond 분기)
+  feat_bias:       15.0   # root(0:4) std를 나누는 값 → root 정밀도 향상
   checkpoint_dir:  ./checkpoints
 
 generation:

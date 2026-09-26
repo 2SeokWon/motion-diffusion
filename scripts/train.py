@@ -59,13 +59,19 @@ def train():
         "latent_dim":      cfg.model.latent_dim,
         "ff_size":         cfg.model.ff_size,
         "num_layers":      cfg.model.num_layers,
-        "mask_prob":       cfg.training.mask_prob,
+        "class_drop":      cfg.training.class_drop,
+        "cond_drop":       cfg.training.cond_drop,
+        "joint_drop":      cfg.training.joint_drop,
+        "max_waypoints":   cfg.waypoint.max_waypoints,
+        "dense_prob":      cfg.waypoint.dense_prob,
     }, resume="allow")
 
     dataset = MotionDataset(
         processed_data_path=cfg.data.processed_dir,
         seq_len=cfg.model.seq_len,
         feat_bias=cfg.training.feat_bias,
+        max_waypoints=cfg.waypoint.max_waypoints,
+        dense_prob=cfg.waypoint.dense_prob,
     )
     dataloader = DataLoader(
         dataset,
@@ -84,6 +90,7 @@ def train():
         num_layers=cfg.model.num_layers,
         num_heads=cfg.model.num_heads,
         dropout=cfg.model.dropout,
+        cond_dim=cfg.model.cond_dim,
     ).to(device)
 
     betas = torch.linspace(cfg.diffusion.beta_start, cfg.diffusion.beta_end, cfg.diffusion.num_timesteps)
@@ -108,25 +115,32 @@ def train():
     else:
         print("Starting training from scratch.")
 
-    cond_start = cfg.model.input_feats - cfg.model.cond_features  # 210
+    # CFG 드롭 구간: [0, a) 클래스만 / [a, b) 경유점만 / [b, c) 둘 다 / 나머지는 드롭 없음
+    drop_a = cfg.training.class_drop
+    drop_b = drop_a + cfg.training.cond_drop
+    drop_c = drop_b + cfg.training.joint_drop
 
     print("Starting training...")
     for epoch in range(start_epoch, cfg.training.num_epochs):
         model.train()
-        total_loss = total_root = total_joint = total_foot = total_cond = 0.0
+        total_loss = total_root = total_joint = total_foot = 0.0
 
         progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{cfg.training.num_epochs}", leave=False)
 
         for batch in progress_bar:
             x_start = batch['motion'].to(device)
             labels_name = batch['label_name'].to(device)
-            cond = x_start[:, :, cond_start:]
+            cond = batch['cond'].to(device)  # [B, T, 4]
 
             B = x_start.size(0)
-            classes_name = torch.argmax(labels_name, dim=1)
-            mask_name = torch.rand(B, device=device) < cfg.training.mask_prob
-            classes_name = classes_name.clone()
-            classes_name[mask_name] = -1
+            classes_name = torch.argmax(labels_name, dim=1).clone()
+
+            # CFG 드롭: 클래스만 / 경유점만 / 둘 다 (둘 다 드롭 = 샘플링의 uncond 분기와 같은 입력)
+            u = torch.rand(B, device=device)
+            drop_class = (u < drop_a) | ((u >= drop_b) & (u < drop_c))
+            drop_cond  = (u >= drop_a) & (u < drop_c)
+            classes_name[drop_class] = -1
+            cond = cond.masked_fill(drop_cond.view(B, 1, 1), 0.0)  # 마스크까지 0 → "경유점 없음"
 
             t = torch.randint(0, cfg.diffusion.num_timesteps, (B,), device=device)
 
@@ -135,7 +149,6 @@ def train():
                 loss_dict = diffusion.training_losses_cond(
                     model, x_start, t,
                     cond=cond,
-                    cond_drop_prob=cfg.training.mask_prob,
                     model_kwargs={'classes_name': classes_name},
                 )
                 loss = loss_dict['loss']
@@ -149,7 +162,6 @@ def train():
             total_root  += loss_dict.get('loss_root',  torch.tensor(0.0)).item()
             total_joint += loss_dict.get('loss_joint', torch.tensor(0.0)).item()
             total_foot  += loss_dict.get('loss_foot',  torch.tensor(0.0)).item()
-            total_cond  += loss_dict.get('loss_cond',  torch.tensor(0.0)).item()
 
             n = progress_bar.n + 1
             progress_bar.set_postfix({
@@ -157,19 +169,18 @@ def train():
                 'root':  f'{total_root  / n:.4f}',
                 'joint': f'{total_joint / n:.4f}',
                 'foot':  f'{total_foot  / n:.4f}',
-                'cond':  f'{total_cond  / n:.4f}',
                 'lr':    f'{scheduler.get_last_lr()[0]:.6f}',
             })
 
         N = len(dataloader)
         avg = {k: v / N for k, v in {
             'loss': total_loss, 'root': total_root,
-            'joint': total_joint, 'foot': total_foot, 'cond': total_cond,
+            'joint': total_joint, 'foot': total_foot,
         }.items()}
 
         print(f"Epoch [{epoch+1}/{cfg.training.num_epochs}] "
               f"Loss: {avg['loss']:.4f}  Root: {avg['root']:.4f}  "
-              f"Joint: {avg['joint']:.4f}  Foot: {avg['foot']:.4f}  Cond: {avg['cond']:.4f}")
+              f"Joint: {avg['joint']:.4f}  Foot: {avg['foot']:.4f}")
         wandb.log({"epoch": epoch + 1, "learning_rate": scheduler.get_last_lr()[0], **{f"avg_{k}": v for k, v in avg.items()}})
 
         if (epoch + 1) % cfg.training.save_interval == 0:

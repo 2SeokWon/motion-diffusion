@@ -152,11 +152,11 @@ class GaussianDiffusion(nn.Module):
     
     #####################################################################################################################
 
-    def training_losses_cond(self, model, x_start, t, cond, cond_drop_prob: float = 0.1, model_kwargs=None):
+    def training_losses_cond(self, model, x_start, t, cond, model_kwargs=None):
         """
-        cond를 별도 입력으로 쓰는 학습 손실(= 표준 DDPM + 간단 CFG 드롭).
-        x_start: [B,T,213] (정규화)
-        cond:    [B,15]    (정규화된 앵커 벡터)
+        경유점 조건을 모델 입력으로만 쓰는 학습 손실 (표준 DDPM).
+        x_start: [B,T,210] (정규화된 모션, 궤적 채널 없음)
+        cond:    [B,T,4]   (경유점 값 x,z,yaw × 마스크 | 마스크). CFG 드롭은 train.py에서 적용된 상태로 들어온다.
         """
 
         if model_kwargs is None:
@@ -165,33 +165,24 @@ class GaussianDiffusion(nn.Module):
         target = torch.randn_like(x_start) # target ε ~ N(0,I)
         x_t = self.q_sample(x_start, t, target) # x_t = √ᾱ_t x_0 + √(1-ᾱ_t) ε
 
-        # classifier-free: cond 일부 드롭
-        if cond_drop_prob > 0.0:
-            drop = (torch.rand(x_start.size(0), device=x_start.device) < cond_drop_prob).view(-1,1,1) # [Batch, 1, 1]
-            cond_in = torch.where(drop, torch.zeros_like(cond), cond) # drop[b] == True -> cond 0으로
-        else:
-            cond_in = cond
-
-        model_output = model(x_t, t, cond_in, **model_kwargs)  # ← 모델이 cond 인자를 받도록만 해주면 됨
+        model_output = model(x_t, t, cond, **model_kwargs)
         loss = F.mse_loss(model_output, target)
 
         with torch.no_grad(): # .detach()와 유사, 이 블록은 그래디언트 흐름에 영향을 주지 않음
-            loss_root = F.mse_loss(model_output[:,:,:4], target[:,:,:4]) #hip + delta
+            loss_root = F.mse_loss(model_output[:,:,:4], target[:,:,:4]) #hip height + root velocity
             loss_joint = F.mse_loss(model_output[:,:,4:208], target[:,:,4:208])
             loss_foot = F.mse_loss(model_output[:,:,208:210], target[:,:,208:210])
-            loss_cond = F.mse_loss(model_output[:,:,210:213], target[:,:,210:213])
         return {
             'loss': loss,
             'loss_root': loss_root.detach(),
             'loss_joint': loss_joint.detach(),
             'loss_foot': loss_foot.detach(),
-            'loss_cond': loss_cond.detach(),
         }
 
     def p_sample_loop_cond(self, model, shape, cond, guidance_scale: float = 1.0, model_kwargs=None):
         """
-        cond + CFG를 쓰는 샘플러. inpaint 불필요.
-        shape: (B,T,213), cond: (B, T, 3)
+        경유점 조건 + CFG 샘플러.
+        shape: (B,T,210), cond: (B,T,4). uncond 분기는 cond=0(마스크 0 = 경유점 없음) + null class.
         """
 
         if model_kwargs is None:

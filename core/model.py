@@ -76,7 +76,7 @@ class OutputProcess(nn.Module):
 class MotionTransformer(nn.Module):
     def __init__(self, input_feats, seq_len = None,
                 latent_dim=1024, ff_size=4096, num_layers=8,
-                num_heads = 8, dropout=0.1,
+                num_heads = 8, dropout=0.1, cond_dim=4,
                 **kargs):
         super().__init__()
 
@@ -99,7 +99,7 @@ class MotionTransformer(nn.Module):
         )
 
         self.cond_proj = nn.Sequential(
-            nn.Linear(3, latent_dim),
+            nn.Linear(cond_dim, latent_dim), #경유점 값(x, z, yaw) + 마스크
             nn.SiLU(),
             nn.Linear(latent_dim, latent_dim),
         )

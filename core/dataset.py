@@ -10,10 +10,12 @@ from .motion_features import tensor_to_motion_object_root
 
 
 class MotionDataset(Dataset):
-    def __init__(self, processed_data_path, seq_len=180, feat_bias=15.0):
+    def __init__(self, processed_data_path, seq_len=180, feat_bias=15.0, max_waypoints=10, dense_prob=0.1):
         self.processed_data_path = processed_data_path
         self.seq_len = seq_len
         self.feat_bias = feat_bias
+        self.max_waypoints = max_waypoints #시작/도착 외 중간 경유점 최대 개수
+        self.dense_prob = dense_prob #전체 궤적을 조건으로 주는 확률
         metadata_path = os.path.join(processed_data_path, "metadata.json")
 
         with open(metadata_path, 'r') as f:
@@ -33,7 +35,9 @@ class MotionDataset(Dataset):
 
         self.position_mean = np.load(os.path.join(processed_data_path, "position_mean.npy"))
         self.position_std = np.load(os.path.join(processed_data_path, "position_std.npy"))
-        self.position_std = np.maximum(self.position_std, 1e-8)
+        # hip에 고정 offset으로 붙은 관절(Chest, RightHip, LeftHip)은 hip 기준 위치가 상수이다.
+        # 반올림 오차(std≈4e-6)를 표준편차 1로 키우지 않도록, std가 매우 작으면 나누지 않는다(→ 정규화 후 ≈ 0).
+        self.position_std = np.where(self.position_std < 1e-3, 1.0, self.position_std)
 
         self.rotation_mean = np.load(os.path.join(processed_data_path, "rotation_mean.npy"))
         self.rotation_std = np.load(os.path.join(processed_data_path, "rotation_std.npy"))
@@ -45,7 +49,8 @@ class MotionDataset(Dataset):
 
         self.abs_traj_mean = np.load(os.path.join(processed_data_path, "abs_traj_mean.npy"))
         self.abs_traj_std = np.load(os.path.join(processed_data_path, "abs_traj_std.npy"))
-        self.abs_traj_std = np.maximum(self.abs_traj_std / self.feat_bias, 1e-8)
+        # 궤적은 노이즈를 섞는 생성 대상이 아니라 조건 입력이므로 feat_bias를 적용하지 않는다(표준정규화)
+        self.abs_traj_std = np.maximum(self.abs_traj_std, 1e-8)
 
         self.sampleable_clips = [c for c in self.metadata if c['length'] >= self.seq_len]
 
@@ -88,17 +93,36 @@ class MotionDataset(Dataset):
         position_part = (features[:, 4:70] - self.position_mean) / self.position_std            # [180, 66]
         rotation_part = (features[:, 70:208] - self.rotation_mean) / self.rotation_std          # [180, 138]
         foot_part     = (features[:, 208:210] - self.foot_mean) / self.foot_std                 # [180, 2]
-        cond_part     = (abs_traj - self.abs_traj_mean) / self.abs_traj_std                     # [180, 3]
+        traj_part     = (abs_traj - self.abs_traj_mean) / self.abs_traj_std                     # [180, 3]
 
         normalized_segment = np.concatenate(
-            [root_hip_part, root_vel_part, position_part, rotation_part, foot_part, cond_part],
+            [root_hip_part, root_vel_part, position_part, rotation_part, foot_part],
             axis=1
-        )  # [180, 213]
+        )  # [180, 210] ← 궤적은 정답에 넣지 않는다 (넣으면 조건을 그대로 베끼는 문제가 생김)
 
         motion_tensor = torch.from_numpy(normalized_segment).float()
+        mask = self._sample_waypoint_mask()  # [180, 1]
+        cond = torch.cat([torch.from_numpy(traj_part).float() * mask, mask], dim=1)  # [180, 4] = 경유점 값 + 마스크
         label_one_hot = F.one_hot(torch.tensor(class_name_idx), num_classes=self.num_name_classes).float()
 
         return {
             'motion': motion_tensor,
+            'cond': cond,
             'label_name': label_one_hot,
         }
+
+    def _sample_waypoint_mask(self):
+        """
+        매 샘플마다 어떤 프레임의 궤적을 보여줄지 무작위로 정한다 (빈칸 채우기 학습).
+        DataLoader worker마다 numpy 난수 상태가 복제되는 문제를 피하려고 torch 난수를 쓴다.
+        """
+        T = self.seq_len
+        mask = torch.zeros(T, 1)
+        if torch.rand(()) < self.dense_prob: #전체 궤적 (dense 경로 추종 능력 유지)
+            return mask.fill_(1.0)
+
+        mask[0] = 1.0  #시작 (항상 원점)
+        mask[-1] = 1.0 #도착
+        k = int(torch.randint(0, self.max_waypoints + 1, ()))
+        mask[1 + torch.randperm(T - 2)[:k]] = 1.0 #중간 경유점 0~max_waypoints개
+        return mask
