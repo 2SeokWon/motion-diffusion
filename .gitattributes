@@ -1,0 +1,2 @@
+# Windows에서 커밋해도 쉘 스크립트는 LF로 유지 (CRLF면 리눅스 서버에서 '\r' 오류)
+*.sh text eol=lf

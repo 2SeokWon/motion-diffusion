@@ -1,0 +1,8 @@
+# GPU 서버용 최소 패키지 (학습 / 전처리 / 평가). PyTorch는 서버 이미지에 설치된 것을 그대로 쓴다.
+# 뷰어·영상 렌더링용 GUI 패키지(pyopengl, pygame, imgui, glfw, imageio)는 제외 → 로컬 PC에서 environment.yml로.
+numpy
+PyYAML
+tqdm
+joblib
+PyGLM>=2.8   # `from pyglm import glm` 형태는 2.8부터
+wandb

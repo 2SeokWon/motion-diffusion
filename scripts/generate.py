@@ -17,7 +17,7 @@ from core.motion_features import tensor_to_motion_object_root
 from core.metrics import waypoint_metrics, foot_positions, foot_skating
 from core.utils import write_bvh
 from bvh_viewer.BVH_Parser import bvh_parser
-from bvh_viewer.render_video import render_movie, tensor_to_motion_object
+from core.reconstruct import tensor_to_motion_object
 
 
 def gt_foot_skating(raw_dir, source_bvh, start_frame, num_frames):
@@ -38,6 +38,8 @@ def generate():
                         help="CFG scale (overrides config.yml)")
     parser.add_argument('--class_idx',       type=int,   default=None,
                         help="Class label for conditional generation (0 ~ 6). Omit for unconditional.")
+    parser.add_argument('--no_render',       action='store_true',
+                        help="Skip sample.mp4 (needs a display/OpenGL; use on headless GPU servers).")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -151,7 +153,9 @@ def generate():
     print(f"Foot skating ratio {metrics['gen_skating_ratio']:.3f}"
           + (f" (GT {metrics['gt_skating_ratio']:.3f})" if 'gt_skating_ratio' in metrics else ""))
     write_bvh(root, motion_obj, os.path.join(output_dir, "sample.bvh"))
-    render_movie(root, motion_obj, os.path.join(output_dir, "sample.mp4"))
+    if not args.no_render:
+        from bvh_viewer.render_video import render_movie  #pygame/OpenGL은 렌더링할 때만 불러온다
+        render_movie(root, motion_obj, os.path.join(output_dir, "sample.mp4"))
 
     print(f"\nGeneration complete. Saved to {output_dir}")
 

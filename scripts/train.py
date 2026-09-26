@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import copy
 import math
 import shutil
+import time
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -211,7 +212,10 @@ def train():
     model.train()
     batches = cycle(dataloader)
     running = {'loss': 0.0, 'loss_root': 0.0, 'loss_joint': 0.0, 'loss_foot': 0.0}
-    progress_bar = tqdm(total=tc.total_steps, initial=step, desc="Training")
+    # nohup으로 파일에 기록할 때는 진행 막대가 한 줄에 이어 붙으므로 끄고, log_interval마다 한 줄씩 남긴다
+    is_tty = sys.stdout.isatty()
+    progress_bar = tqdm(total=tc.total_steps, initial=step, desc="Training", disable=not is_tty)
+    t_last, step_last = time.time(), step
 
     while step < tc.total_steps:
         batch = next(batches)
@@ -253,6 +257,12 @@ def train():
             wandb.log({'step': step, 'learning_rate': scheduler.get_last_lr()[0],
                        **{f'train/{k}': v for k, v in avg.items()}}, step=step)
             running = {k: 0.0 for k in running}
+            if not is_tty:
+                rate = (step - step_last) / max(time.time() - t_last, 1e-9)
+                eta_h = (tc.total_steps - step) / max(rate, 1e-9) / 3600
+                print(f"[step {step}/{tc.total_steps}] loss {avg['loss']:.4f} (root {avg['loss_root']:.4f}) "
+                      f"lr {scheduler.get_last_lr()[0]:.2e} | {rate:.1f} it/s | ETA {eta_h:.1f}h", flush=True)
+                t_last, step_last = time.time(), step
 
         if step % tc.eval_interval == 0 or step == tc.total_steps:
             ev = evaluate(ema_model, diffusion, eval_set, device, use_amp)  #생성에 쓰는 EMA 가중치로 평가
