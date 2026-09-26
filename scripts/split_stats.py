@@ -12,21 +12,7 @@ import numpy as np
 
 from core.config import load_config
 from core.dataset import split_range
-from core.motion_features import STRIDE, tensor_to_motion_object_root
-
-
-def integrate_root_batch(root_vel):
-    """
-    tensor_to_motion_object_root의 벡터화 버전 (창 여러 개를 한 번에).
-    root_vel: [N, T, 3] = 로컬 (vx, vz, 각속도) → [N, T, 3] = 원점 기준 (x, z, yaw)
-    Y축 회전끼리는 교환 가능하므로 누적 회전 = 각속도의 누적합.
-    """
-    yaw = np.cumsum(root_vel[..., 2], axis=1)
-    c, s = np.cos(yaw), np.sin(yaw)
-    vx, vz = root_vel[..., 0], root_vel[..., 1]
-    x = np.cumsum(c * vx + s * vz, axis=1)   # Ry(yaw) @ (vx, 0, vz)
-    z = np.cumsum(-s * vx + c * vz, axis=1)
-    return np.stack([x, z, yaw], axis=-1)
+from core.motion_features import STRIDE, tensor_to_motion_object_root, integrate_root_velocity
 
 
 def main():
@@ -59,7 +45,7 @@ def main():
         starts = np.arange(0, len(train) - T + 1, STRIDE)
         windows = np.stack([train[s:s + T, 1:4] for s in starts])  # [N, T, 3]
         windows[:, 0, :] = 0.0
-        traj = integrate_root_batch(windows)
+        traj = integrate_root_velocity(windows)
         traj_sum += traj.sum((0, 1)); traj_sq += (traj ** 2).sum((0, 1)); traj_n += traj.shape[0] * T
 
         if len(check_windows) < 5:

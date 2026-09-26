@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-from .motion_features import tensor_to_motion_object_root
+from .motion_features import integrate_root_velocity
 
 
 def split_range(length, split, test_ratio):
@@ -109,7 +109,7 @@ class MotionDataset(Dataset):
         # (make_control.py, preprocess.py의 abs_traj 통계와 같은 규약 → 조건 궤적이 항상 원점에서 시작)
         features[0, 1:4] = 0.0
 
-        abs_traj = tensor_to_motion_object_root(features)  # [180, 3]
+        abs_traj = integrate_root_velocity(features[:, 1:4])  # [180, 3], PyGLM 루프 대신 벡터화 (데이터 로딩 병목 방지)
 
         # Normalize
         root_hip_part = (features[:, 0:1] - self.root_pos_mean[0]) / self.root_pos_std[0]      # [180, 1]

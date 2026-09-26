@@ -155,6 +155,22 @@ def tensor_to_motion_object_root(generated_tensor: np.ndarray) -> np.ndarray:
     return traj
 
 
+def integrate_root_velocity(root_vel: np.ndarray) -> np.ndarray:
+    """
+    tensor_to_motion_object_root의 벡터화 버전 (루프 없이, 창 여러 개도 한 번에).
+    root_vel: [..., T, 3] = 로컬 (vx, vz, 각속도) → [..., T, 3] = 원점 기준 (x, z, yaw)
+    Y축 회전끼리는 교환 가능하므로 누적 회전 = 각속도의 누적합이고,
+    이번 프레임의 회전을 먼저 적용한 뒤 속도를 월드로 돌려 더한다(원래 함수와 같은 순서).
+    원래 함수와의 차이는 float32 반올림 수준(~1e-4 cm, scripts/split_stats.py에서 매번 검사).
+    """
+    yaw = np.cumsum(root_vel[..., 2], axis=-1)
+    c, s = np.cos(yaw), np.sin(yaw)
+    vx, vz = root_vel[..., 0], root_vel[..., 1]
+    x = np.cumsum(c * vx + s * vz, axis=-1)   # Ry(yaw) @ (vx, 0, vz)
+    z = np.cumsum(-s * vx + c * vz, axis=-1)
+    return np.stack([x, z, yaw], axis=-1)
+
+
 def moving_average_path(raw_pos_xz, raw_yaw, radius=30):
     win = 2 * radius + 1
     pad_mode = "edge"

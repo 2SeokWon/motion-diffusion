@@ -152,17 +152,18 @@ class GaussianDiffusion(nn.Module):
     
     #####################################################################################################################
 
-    def training_losses_cond(self, model, x_start, t, cond, model_kwargs=None):
+    def training_losses_cond(self, model, x_start, t, cond, model_kwargs=None, noise=None):
         """
         경유점 조건을 모델 입력으로만 쓰는 학습 손실 (표준 DDPM).
         x_start: [B,T,210] (정규화된 모션, 궤적 채널 없음)
         cond:    [B,T,4]   (경유점 값 x,z,yaw × 마스크 | 마스크). CFG 드롭은 train.py에서 적용된 상태로 들어온다.
+        noise:   평가 손실처럼 노이즈를 고정해야 할 때만 전달
         """
 
         if model_kwargs is None:
             model_kwargs = {}
-        
-        target = torch.randn_like(x_start) # target ε ~ N(0,I)
+
+        target = torch.randn_like(x_start) if noise is None else noise # target ε ~ N(0,I)
         x_t = self.q_sample(x_start, t, target) # x_t = √ᾱ_t x_0 + √(1-ᾱ_t) ε
 
         model_output = model(x_t, t, cond, **model_kwargs)

@@ -8,8 +8,8 @@ data:
 model:
   njoints:            23
   seq_len:            180
-  latent_dim:         1024
-  ff_size:            4096
+  latent_dim:         512    # 약 2,500만 파라미터 (데이터 약 76분 기준, MDM ~2천만 수준)
+  ff_size:            2048
   num_layers:         8
   num_heads:          8
   dropout:            0.1
@@ -31,13 +31,19 @@ diffusion:
 
 training:
   seed:            42
-  num_epochs:      500
+  total_steps:     300000 # 창이 1프레임씩 겹쳐 에폭은 의미가 약하므로 스텝으로 학습 길이를 정한다
   batch_size:      64
   num_workers:     16
-  learning_rate:   1e-4
+  learning_rate:   1.0e-4 # YAML(PyYAML)은 '1e-4'를 문자열로 읽으므로 소수점을 넣는다
+  min_lr:          1.0e-5 # 코사인 감소의 끝 값
+  warmup_steps:    2000   # 0 → learning_rate 선형 증가
   weight_decay:    0.05
-  lr_anneal_steps: 500000
-  save_interval:   5      # epochs between checkpoints
+  ema_decay:       0.9999 # 생성에는 EMA 가중치를 쓴다
+  log_interval:    100    # 학습 손실 기록 (스텝)
+  eval_interval:   5000   # 평가 손실 측정 (스텝)
+  eval_windows:    2048   # 평가 손실에 쓰는 고정 평가 창 수 (t, 노이즈, 마스크 모두 시드 고정)
+  save_interval:   10000  # last.pt 갱신 (스텝). best.pt는 평가 손실이 좋아질 때마다 저장
+  snapshot_interval: 50000 # 이 간격마다 step_XXXXXX.pt를 따로 남긴다
   class_drop:      0.1    # CFG: 클래스만 드롭하는 확률
   cond_drop:       0.1    # CFG: 경유점 조건만 드롭하는 확률
   joint_drop:      0.1    # CFG: 클래스 + 경유점 동시 드롭 확률 (샘플링의 uncond 분기)

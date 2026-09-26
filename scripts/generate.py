@@ -74,7 +74,9 @@ def generate():
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint_path}")
     print(f"Loading checkpoint from {args.checkpoint_path}...")
     ckpt = torch.load(args.checkpoint_path, map_location=device)
-    model.load_state_dict(ckpt['model_state_dict'])
+    weights = 'ema_state_dict' if 'ema_state_dict' in ckpt else 'model_state_dict'  #생성에는 EMA 가중치를 우선 사용
+    model.load_state_dict(ckpt[weights])
+    print(f"Loaded {weights} (step {ckpt.get('step', '?')})")
     model.eval()
 
     # ─ 통계 로드 ─
