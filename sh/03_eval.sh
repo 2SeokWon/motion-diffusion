@@ -1,9 +1,29 @@
 #!/usr/bin/env bash
-# 일괄 평가 → 결과표. (일괄 평가 스크립트를 만든 뒤 채운다)
-# 그 전까지는 한 구간만 수동으로 확인할 수 있다:
-#   python scripts/make_control.py --bvh data/raw/Angry_FW.bvh --start_frame 3000 --waypoints 5
-#   python scripts/generate.py --checkpoint_path checkpoints/<run>/best.pt --class_idx 1 --no_render
-#   (start_frame은 평가 구간 = 각 파일의 뒤 15% 안에서 고른다)
+# 일괄 평가 → 결과표 (results/eval_<run>_<ckpt>_<sampler>_<시간>/summary.md)
+# 평가 창: 파일마다 학습에 안 쓴 뒤 15%에서 겹치지 않는 180프레임 창 2개 (49파일 → 98개)
+# 조건:    경유점 goal / 2 / 5 / 10 / dense
+# 사용:
+#   bash sh/03_eval.sh checkpoints/<run>/best.pt            # DDPM 1000 + DDIM 50/20/10
+#   SAMPLERS="ddim50" bash sh/03_eval.sh checkpoints/<run>/best.pt
 set -euo pipefail
-echo "TODO: 일괄 평가 스크립트 작성 후 연결" >&2
-exit 1
+cd "$(dirname "$0")/.."
+PY=${PYTHON:-python}
+
+CKPT=${1:?사용법: bash sh/03_eval.sh checkpoints/<run>/best.pt}
+SAMPLERS=${SAMPLERS:-"ddpm ddim50 ddim20 ddim10"}
+
+mkdir -p logs
+for S in $SAMPLERS; do
+    if [ "$S" = "ddpm" ]; then
+        ARGS=(--sampler ddpm)
+    else
+        ARGS=(--sampler ddim --steps "${S#ddim}")
+    fi
+    LOG="logs/eval_${S}_$(date +%Y%m%d_%H%M%S).log"
+    echo "=== $S → $LOG"
+    "$PY" -u scripts/evaluate.py --checkpoint_path "$CKPT" "${ARGS[@]}" 2>&1 | tee "$LOG"
+done
+
+echo
+echo "결과표: ls -d results/eval_*  (각 폴더의 summary.md)"
+echo "[로컬 PC로 가져오기] scp -r <user>@<server>:~/motion-diffusion/results/eval_* results/"

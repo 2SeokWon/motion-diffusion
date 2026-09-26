@@ -1,6 +1,7 @@
 # core/reconstruct.py
 # 생성 특징 텐서 → Motion 객체 복원. bvh_viewer/render_video.py에서 옮겨 왔다.
 # render_video.py는 pygame/OpenGL을 import하므로, 화면이 없는 GPU 서버에서도 생성·평가가 되도록 렌더링과 분리한다.
+import functools
 import numpy as np
 import torch
 from pyglm import glm
@@ -10,15 +11,27 @@ from bvh_viewer.BVH_Parser import bvh_parser, Motion, MotionFrame, Joint, get_pr
 from core.kinematics import sixd_to_rotation_matrix
 
 
-def tensor_to_motion_object(generated_tensor: np.ndarray, template_bvh_path: str, FPS=60) -> (Joint, Motion):
+@functools.lru_cache(maxsize=4)
+def _load_skeleton(template_bvh_path):
     """
-    모델이 생성하고 역정규화한 특징 텐서를 bvh_parser의 Motion 객체로 변환합니다.
+    템플릿 BVH의 관절 계층만 한 번 파싱해 재사용한다. 파일 전체 파싱이 복원 시간의 절반 이상이라
+    일괄 평가처럼 수백 번 부를 때 병목이 된다. FK는 프레임에만 결과를 쓰고 Joint는 읽기만 하므로 공유해도 안전하다.
     """
-    print("Converting tensor to Motion object...")
-
     root, _ = bvh_parser(template_bvh_path)
     # quaternion_frame이 비어있을 수 있으므로, bvh_parser가 생성한 joint 계층구조에서 순서를 가져옵니다.
     joint_order = [j.name for j in get_preorder_joint_list(root) if "Site" not in j.name]
+    return root, joint_order
+
+
+def tensor_to_motion_object(generated_tensor: np.ndarray, template_bvh_path: str, FPS=60, verbose=True) -> (Joint, Motion):
+    """
+    모델이 생성하고 역정규화한 특징 텐서를 bvh_parser의 Motion 객체로 변환합니다.
+    verbose=False: 일괄 평가처럼 여러 번 부를 때 진행 막대/안내 문구를 끈다.
+    """
+    if verbose:
+        print("Converting tensor to Motion object...")
+
+    root, joint_order = _load_skeleton(template_bvh_path)
 
     num_joints = len(joint_order)
     sixd_dim = num_joints * 6
@@ -31,7 +44,7 @@ def tensor_to_motion_object(generated_tensor: np.ndarray, template_bvh_path: str
     current_global_pos_glm = glm.vec3(0.0, 0.0, 0.0)
     current_vr_rot_glm = glm.quat(1.0, 0.0, 0.0, 0.0)
 
-    for i in tqdm(range(num_frames), desc="Reconstructing Motion"):
+    for i in tqdm(range(num_frames), desc="Reconstructing Motion", disable=not verbose):
         frame_features = generated_tensor[i]
 
         root_y_height = frame_features[0]
@@ -76,8 +89,10 @@ def tensor_to_motion_object(generated_tensor: np.ndarray, template_bvh_path: str
 
         motion_obj.quaternion_frame.append(motion_frame)
 
-    print("Performing Forward Kinematics for all frames...")
-    for frame in tqdm(motion_obj.quaternion_frame, desc="Calculating FK"):
+    if verbose:
+        print("Performing Forward Kinematics for all frames...")
+    for frame in tqdm(motion_obj.quaternion_frame, desc="Calculating FK", disable=not verbose):
         motion_obj.compute_forward_kinematics(root, frame.virtual_transform, frame)
-    print("Conversion complete.")
+    if verbose:
+        print("Conversion complete.")
     return root, motion_obj

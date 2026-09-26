@@ -193,19 +193,9 @@ class GaussianDiffusion(nn.Module):
         B, T, F = shape
         x = torch.randn(*shape, device=device)
 
-        zero_cond = torch.zeros_like(cond, device=device)  # uncond 분기
         for i in tqdm(reversed(range(self.num_timesteps)), desc='Sampling loop time step', total=self.num_timesteps):
             t = torch.full((B,), i, device=device, dtype=torch.long)
-
-            eps_c = model(x, t, cond=cond, **model_kwargs)               # conditional
-            if guidance_scale <= 1.0:
-                eps = eps_c
-            else:
-                uncond_kwargs = model_kwargs.copy()
-                uncond_kwargs['classes_name'] = None
-
-                eps_u = model(x, t, cond=zero_cond, **uncond_kwargs)      # unconditional 여기 model_kwargs를 어떻게?
-                eps = eps_u + guidance_scale * (eps_c - eps_u)
+            eps = self._guided_eps(model, x, t, cond, guidance_scale, model_kwargs)
 
             out = self.p_mean_variance(eps, x, t)
             noise = torch.randn_like(x) if i > 0 else 0
@@ -213,4 +203,48 @@ class GaussianDiffusion(nn.Module):
             x = out['mean'] + nonzero * torch.exp(0.5*out['log_variance']) * noise
 
         return x
-    
+
+    def _guided_eps(self, model, x, t, cond, guidance_scale, model_kwargs):
+        """CFG 노이즈 예측. uncond 분기는 cond=0(마스크 0 = 경유점 없음) + null class (학습의 joint_drop과 같은 입력)."""
+        eps_c = model(x, t, cond=cond, **model_kwargs)
+        if guidance_scale <= 1.0:
+            return eps_c
+        uncond_kwargs = model_kwargs.copy()
+        uncond_kwargs['classes_name'] = None
+        eps_u = model(x, t, cond=torch.zeros_like(cond), **uncond_kwargs)
+        return eps_u + guidance_scale * (eps_c - eps_u)
+
+    def ddim_sample_loop_cond(self, model, shape, cond, num_steps=50, eta=0.0, guidance_scale: float = 1.0,
+                              model_kwargs=None, progress=True):
+        """
+        DDIM (Song et al., 2021) + 경유점 CFG. diffusion-policy의 ddim_sample_loop를 옮겨 왔다.
+        DDPM 학습은 각 시점의 분포 q(x_t | x_0)만 맞추므로, 재학습 없이 num_steps번만 건너뛰며 샘플링할 수 있다.
+        eta=0이면 결정적, eta=1 + num_steps=num_timesteps이면 p_sample_loop_cond와 같은 식이 된다.
+        """
+        if model_kwargs is None:
+            model_kwargs = {}
+
+        device = next(model.parameters()).device
+        B = shape[0]
+        timesteps = torch.linspace(self.num_timesteps - 1, 0, num_steps).round().long().tolist()
+
+        x = torch.randn(*shape, device=device)
+        for i, t_cur in enumerate(tqdm(timesteps, desc=f'DDIM {num_steps} steps', disable=not progress)):
+            t = torch.full((B,), t_cur, device=device, dtype=torch.long)
+            eps = self._guided_eps(model, x, t, cond, guidance_scale, model_kwargs)
+
+            alpha_t = _extract_into_tensor(self.alphas_cumprod, t, x.shape)
+            if i + 1 < num_steps:
+                alpha_prev = _extract_into_tensor(self.alphas_cumprod, torch.full_like(t, timesteps[i + 1]), x.shape)
+            else:
+                alpha_prev = torch.ones_like(alpha_t)
+
+            pred_xstart = (x - torch.sqrt(1.0 - alpha_t) * eps) / torch.sqrt(alpha_t)
+            sigma = eta * torch.sqrt((1.0 - alpha_prev) / (1.0 - alpha_t) * (1.0 - alpha_t / alpha_prev))
+            direction = torch.sqrt(torch.clamp(1.0 - alpha_prev - sigma ** 2, min=0.0)) * eps  #x_t 쪽을 가리키는 방향
+            x = torch.sqrt(alpha_prev) * pred_xstart + direction
+            if i + 1 < num_steps:  #마지막 칸은 sigma=0 (DDPM 루프와 같은 난수 순서를 유지하려고 노이즈도 뽑지 않는다)
+                x = x + sigma * torch.randn_like(x)
+
+        return x
+
